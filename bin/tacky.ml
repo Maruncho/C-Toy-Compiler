@@ -1,0 +1,44 @@
+
+type identifier = string
+
+type unary_op = Complement | Negate
+
+type operand = Constant of Int64.t
+             | Var of identifier
+
+type instruction = Return of operand
+                 | Unary of unary_op * operand * operand
+
+type toplevel = Function of string * instruction list
+
+type program = Program of toplevel
+
+let unary_op_str = function
+    | Complement -> "NOT"
+    | Negate -> "NEG"
+
+let operand_str oper =
+    match oper with
+        | Constant num -> "$" ^ (Int64.to_string num)
+        | Var id -> "%" ^ id
+
+let instruction_str inst =
+    "\t" ^
+    match inst with
+        | Return opr -> "Return("^(operand_str opr)^")\n"
+        | Unary (op, s, d) -> "Unary("^(unary_op_str op)^", "^(operand_str s)^", "^(operand_str d)^")\n"
+
+let toplevel_str tl =
+    match tl with
+        | Function (name, instructions) ->
+            name ^ ":\n" ^
+            List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
+
+
+
+let string_of_tacky tacky = 
+    match tacky with
+        | Program tl ->
+            toplevel_str tl ^
+            "\n"
+
