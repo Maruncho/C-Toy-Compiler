@@ -30,7 +30,7 @@ if [[ $result != "0" ]]; then
     exit $result
 fi
 
-~/dev/noraCompilerC/compiler/_build/default/bin/main.exe "$fileName.i" "$arg"
+./_build/default/bin/main.exe "$fileName.i" "$arg"
 result="$?"
 
 rm "$fileName.i"
