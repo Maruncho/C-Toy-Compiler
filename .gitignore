@@ -8,6 +8,7 @@
 *.cmxs
 *.cmxa
 example
+driver.sh
 
 # ocamlbuild working directory
 _build/
