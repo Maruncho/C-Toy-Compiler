@@ -3,9 +3,15 @@ let debug = ref false;
 
 type identifier = string
 
-type register = RAX | R10
+type register = RAX |
+                RCX | CL |(*temporary*)
+                RDX |
+                R10 |
+                R11
 
 type unop = Neg | Not
+type binop = Add | Sub | Mul |
+             And | Or | Xor | Sal | Sar
 
 type operand = Imm of Int64.t
              | Reg of register
@@ -14,6 +20,9 @@ type operand = Imm of Int64.t
 
 type instruction = Mov of (operand * operand)
                  | Unary of (unop * operand)
+                 | Binary of (binop * operand * operand)
+                 | Idiv of operand
+                 | Cdq 
                  | AllocateStack of Int64.t
                  | Ret
 
@@ -23,11 +32,25 @@ type program = Program of toplevel
 
 let register_str = function
     | RAX -> "%eax"
+    | RDX -> "%edx"
+    | RCX -> "%ecx"
+    | CL -> "%cl"
     | R10 -> "%r10d"
+    | R11 -> "%r11d"
 
 let unop_str = function
     | Neg -> "negl\t"
     | Not -> "notl\t"
+
+let binop_str = function
+    | Add -> "addl\t"
+    | Sub -> "subl\t"
+    | Mul -> "imull\t"
+    | And -> "andl\t"
+    | Or  -> "orl\t"
+    | Xor -> "xorl\t"
+    | Sal -> "sall\t"
+    | Sar -> "sarl\t"
 
 
 let operand_str oper =
@@ -39,11 +62,15 @@ let operand_str oper =
 
 let instruction_str inst =
     "\t" ^
-    match inst with
-        | Mov (s, d) -> "movl\t" ^ (operand_str s) ^ ", " ^ (operand_str d) ^ "\n"
-        | Unary (unop, d) -> (unop_str unop) ^ (operand_str d) ^ "\n"
-        | AllocateStack bytes -> "subq\t$" ^ (Int64.to_string bytes) ^ ", %rsp\n"
-        | Ret -> "movq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret\n"
+    (match inst with
+        | Mov (s, d) -> "movl\t" ^ (operand_str s) ^ ", " ^ (operand_str d)
+        | Unary (unop, d) -> (unop_str unop) ^ (operand_str d)
+        | Binary (binop, s, d) -> (binop_str binop) ^ (operand_str s) ^ ", " ^ (operand_str d)
+        | Idiv s -> "idivl\t" ^ (operand_str s)
+        | Cdq -> "cdq"
+        | AllocateStack bytes -> "subq\t$" ^ (Int64.to_string bytes) ^ ", %rsp"
+        | Ret -> "movq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
+    ) ^ "\n"
 
 let toplevel_str tl =
     match tl with

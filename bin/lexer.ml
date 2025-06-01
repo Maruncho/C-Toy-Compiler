@@ -13,8 +13,18 @@ type token =
     | LBRACE
     | RBRACE
     | SEMICOLON
+    | PLUS
     | MINUS
+    | ASTERISK
+    | SLASH
+    | PERCENT
+    | AMPERSAND
+    | PIPE
+    | CARET
+    | LSHIFT
+    | RSHIFT
     | COMPLEMENT
+    | INCREMENT
     | DECREMENT
     | EOF
 
@@ -29,8 +39,18 @@ let string_of_token = function
     | LBRACE -> "{"
     | RBRACE -> "}"
     | SEMICOLON -> ";"
+    | PLUS -> "+"
     | MINUS -> "-"
+    | ASTERISK -> "*"
+    | SLASH -> "/"
+    | PERCENT -> "%"
+    | AMPERSAND -> "&"
+    | PIPE -> "|"
+    | CARET -> "^"
+    | LSHIFT -> "<<"
+    | RSHIFT -> ">>"
     | COMPLEMENT -> "~"
+    | INCREMENT -> "++"
     | DECREMENT -> "--"
     | EOF -> "eof"
 
@@ -64,11 +84,41 @@ let token_regexes =
     (* ; *)
     (re {|(;)|}, (fun _ -> SEMICOLON))
 ;
+    (* ++ *)
+    (re {|(\+\+)|}, (fun _ -> INCREMENT))
+;
     (* -- *)
     (re {|(--)|}, (fun _ -> DECREMENT))
 ;
     (* - *)
     (re {|(-)|}, (fun _ -> MINUS))
+;
+    (* + *)
+    (re {|(\+)|}, (fun _ -> PLUS))
+;
+    (* * *)
+    (re {|(\*)|}, (fun _ -> ASTERISK))
+;
+    (* / *)
+    (re {|(\/)|}, (fun _ -> SLASH))
+;
+    (* % *)
+    (re {|(%)|}, (fun _ -> PERCENT))
+;
+    (* & *)
+    (re {|(&)|}, (fun _ -> AMPERSAND))
+;
+    (* | *)
+    (re {|(\|)|}, (fun _ -> PIPE))
+;
+    (* ^ *)
+    (re {|(\^)|}, (fun _ -> CARET))
+;
+    (* << *)
+    (re {|(<<)|}, (fun _ -> LSHIFT))
+;
+    (* >> *)
+    (re {|(>>)|}, (fun _ -> RSHIFT))
 ;
     (* ~ *)
     (re {|(~)|}, (fun _ -> COMPLEMENT))
@@ -91,4 +141,4 @@ let rec lex ?(print=false) program = let program = (String.trim program) in
         | (token, afterText) -> 
             let () = if print then print_string ((string_of_token token) ^ "\n")
             in token :: (lex ~print:print afterText)
-        | exception NotMatched -> raise (LexError "Syntax error")
+        | exception NotMatched -> raise (LexError ("Syntax error. Unknown symbol: " ^ (String.sub program 0 1)))

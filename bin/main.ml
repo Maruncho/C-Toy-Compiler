@@ -21,7 +21,7 @@ let () = try
     let _ = if m = Lex then (exit 0) in
 
     let parsed = Parser.parse lexed in
-    (*let _ = Ast.printProgram parsed in*)
+    let _ = Ast.printProgram parsed in
     let _ = if m = Parse then (exit 0) in
 
     let tacky = Tackify.tackify parsed in

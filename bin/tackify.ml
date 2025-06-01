@@ -13,6 +13,18 @@ let tackify ast =
         | Ast.Negate -> Tac.Negate
         | Ast.Complement -> Tac.Complement
 
+    in let parseBinaryOp = function
+        | Ast.Add -> Tac.Add
+        | Ast.Sub -> Tac.Subtract
+        | Ast.Mul -> Tac.Multiply
+        | Ast.Div -> Tac.Divide
+        | Ast.Mod -> Tac.Remainder
+        | Ast.And -> Tac.And
+        | Ast.Or -> Tac.Or
+        | Ast.Xor -> Tac.Xor
+        | Ast.Lshift -> Tac.LShift
+        | Ast.Rshift -> Tac.RShift
+
     in let rec parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant(Int64.of_int32 num)
@@ -22,6 +34,14 @@ let tackify ast =
                 let dst = Tac.Var (newTemp()) in
                 let op = parseUnaryOp op in
                 let () = (Tac.Unary (op, src, dst)) #: instrs in
+                dst
+
+            | Ast.Binary (op, left, right) ->
+                let src1 = parseExpr left in
+                let src2 = parseExpr right in
+                let dst = Tac.Var (newTemp()) in
+                let op = parseBinaryOp op in
+                let () = (Tac.Binary (op, src1, src2, dst)) #: instrs in
                 dst
 
     and parseStmt stmt =
