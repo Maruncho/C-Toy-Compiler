@@ -29,10 +29,10 @@ let () = try
     let _ = if m = Tacky then (exit 0) in
 
     let asmt = Assemble.assemble tacky in
-    let assembly = Asmt.string_of_asmt_debug asmt in
-    let _ = print_string assembly in
     let _ = if m = Codegen then (exit 0) in
 
+    let assembly = Asmt.string_of_asmt_debug asmt in
+    let _ = print_string assembly in
     let outputFile = (String.sub file 0 ((String.length file) - 2)) ^ ".s"
     in Core.Out_channel.output_string (Core.Out_channel.create outputFile) assembly
 with

@@ -26,6 +26,15 @@ type token =
     | COMPLEMENT
     | INCREMENT
     | DECREMENT
+    | BANG
+    | LOGAND
+    | LOGOR
+    | EQUAL
+    | NOTEQUAL
+    | LESS
+    | GREATER
+    | LESSEQ
+    | GREATEREQ
     | EOF
 
 let string_of_token = function
@@ -52,6 +61,15 @@ let string_of_token = function
     | COMPLEMENT -> "~"
     | INCREMENT -> "++"
     | DECREMENT -> "--"
+    | BANG -> "!"
+    | LOGAND -> "&&"
+    | LOGOR -> "||"
+    | EQUAL -> "=="
+    | NOTEQUAL -> "!="
+    | LESS -> "<"
+    | GREATER -> ">"
+    | LESSEQ -> "<="
+    | GREATEREQ -> ">="
     | EOF -> "eof"
 
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
@@ -83,6 +101,24 @@ let token_regexes =
 ;
     (* ; *)
     (re {|(;)|}, (fun _ -> SEMICOLON))
+;
+    (* == *)
+    (re {|(==)|}, (fun _ -> EQUAL))
+;
+    (* != *)
+    (re {|(!=)|}, (fun _ -> NOTEQUAL))
+;
+    (* <= *)
+    (re {|(<=)|}, (fun _ -> LESSEQ))
+;
+    (* >= *)
+    (re {|(>=)|}, (fun _ -> GREATEREQ))
+;
+    (* && *)
+    (re {|(&&)|}, (fun _ -> LOGAND))
+;
+    (* || *)
+    (re {|(\|\|)|}, (fun _ -> LOGOR))
 ;
     (* ++ *)
     (re {|(\+\+)|}, (fun _ -> INCREMENT))
@@ -122,6 +158,15 @@ let token_regexes =
 ;
     (* ~ *)
     (re {|(~)|}, (fun _ -> COMPLEMENT))
+;
+    (* ! *)
+    (re {|(!)|}, (fun _ -> BANG))
+;
+    (* < *)
+    (re {|(<)|}, (fun _ -> LESS))
+;
+    (* > *)
+    (re {|(>)|}, (fun _ -> GREATER))
 ]
 
 let match_opt regex text = match Re.exec_opt regex text with

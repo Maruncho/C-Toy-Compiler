@@ -1,8 +1,9 @@
 
 type identifier = string
 
-type unary_op = Complement | Negate
-type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift
+type unary_op = Complement | Negate | LogNot
+type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
+                 LogAnd | LogOr | Eq | Neq | Lt | Le | Gt | Ge
 
 type expr = Int32 of Int32.t
           (*| Identifier of identifier*)
@@ -19,6 +20,7 @@ type program = Program of toplevel
 let string_unary_op = function
     | Complement -> "~"
     | Negate -> "-"
+    | LogNot -> "!"
 
 let string_binary_op = function
     | Add -> "+"
@@ -31,6 +33,14 @@ let string_binary_op = function
     | Xor -> "^"
     | Lshift -> "<<"
     | Rshift -> ">>"
+    | LogAnd -> "&&"
+    | LogOr -> "||"
+    | Eq -> "=="
+    | Neq -> "!="
+    | Lt -> "<"
+    | Le -> "<="
+    | Gt -> ">"
+    | Ge -> ">="
 
 let rec print_expr tabs expr =
     print_string (String.make (tabs*2) ' ');

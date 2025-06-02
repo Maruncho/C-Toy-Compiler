@@ -25,12 +25,24 @@ let parse tokens =
         | L.CARET -> Ast.Xor
         | L.LSHIFT -> Ast.Lshift
         | L.RSHIFT -> Ast.Rshift
+        | L.LOGAND -> Ast.LogAnd
+        | L.LOGOR -> Ast.LogOr
+        | L.EQUAL -> Ast.Eq
+        | L.NOTEQUAL -> Ast.Neq
+        | L.LESS -> Ast.Lt
+        | L.LESSEQ -> Ast.Le
+        | L.GREATER -> Ast.Gt
+        | L.GREATEREQ -> Ast.Ge
         | token -> raise (ParserError ("Invalid operator " ^ (Lexer.string_of_token token)))
 
     in let prec = function
+        | L.LOGOR -> 4
+        | L.LOGAND -> 5
         | L.PIPE -> 6
         | L.CARET -> 7
         | L.AMPERSAND -> 8
+        | L.EQUAL | L.NOTEQUAL -> 9
+        | L.LESS | L.GREATER | L.LESSEQ | L.GREATEREQ -> 10
         | L.LSHIFT | L.RSHIFT -> 11
         | L.PLUS | L.MINUS -> 12
         | L.ASTERISK | L.SLASH | L.PERCENT -> 13
@@ -50,6 +62,7 @@ let parse tokens =
         | L.PLUS -> parse_factor()
         | L.MINUS -> Ast.Unary (Ast.Negate, parse_factor())
         | L.COMPLEMENT -> Ast.Unary (Ast.Complement, parse_factor())
+        | L.BANG -> Ast.Unary (Ast.LogNot, parse_factor())
 
         | L.LPAREN -> let expr = parse_expr 0 in
                       let () = expect L.RPAREN in
