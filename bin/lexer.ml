@@ -18,6 +18,7 @@ type token =
     | ASTERISK
     | SLASH
     | PERCENT
+    | ASSIGN
     | AMPERSAND
     | PIPE
     | CARET
@@ -53,6 +54,7 @@ let string_of_token = function
     | ASTERISK -> "*"
     | SLASH -> "/"
     | PERCENT -> "%"
+    | ASSIGN -> "="
     | AMPERSAND -> "&"
     | PIPE -> "|"
     | CARET -> "^"
@@ -113,6 +115,9 @@ let token_regexes =
 ;
     (* >= *)
     (re {|(>=)|}, (fun _ -> GREATEREQ))
+;
+    (* = *)
+    (re {|(=)|}, (fun _ -> ASSIGN))
 ;
     (* && *)
     (re {|(&&)|}, (fun _ -> LOGAND))

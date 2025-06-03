@@ -34,11 +34,13 @@ let tackify ast =
         | Ast.Le -> Tac.LessOrEqual
         | Ast.Gt -> Tac.GreaterThan
         | Ast.Ge -> Tac.GreaterOrEqual
+        | Ast.Assign -> failwith "assignment operator is not handled by parseBinary"
         | Ast.LogAnd | Ast.LogOr -> failwith "and and/or or are not really binary ops"
 
     in let rec parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
+            | Ast.Var id -> Tac.Var id
 
             | Ast.Unary (op, expr) ->
                 let src = parseExpr expr in
@@ -85,16 +87,37 @@ let tackify ast =
                 let () = (Tac.Binary (op, src1, src2, dst)) #: instrs in
                 dst
 
+            | Ast.Assignment (left, right) ->
+                let dst = Tac.Var (match left with Ast.Var v -> v | _ -> failwith "lvalue of Assignment is not a Ast.Var") in
+                let src = parseExpr right in
+                let () = (Tac.Copy (src, dst)) #: instrs in
+                dst
+
     and parseStmt stmt =
         match stmt with
             | Ast.Return expr ->
                 let src = parseExpr expr in
                 (Tac.Return src) #: instrs
+            | Ast.Expression expr -> let _ = parseExpr expr in ()
+            | Ast.Null -> ()
 
-    in let parseTopLevel tl =
-        match tl with
-            | Ast.Function (name, stmt) -> let _ = parseStmt stmt in
-                                           Tac.Function (name, List.rev !instrs)
+    and parseDecl decl =
+        match decl with
+            | Ast.Declaration (_, None) -> ()
+            | Ast.Declaration (id, Some expr) ->
+                let src = parseExpr expr in
+                (Tac.Copy (src, Tac.Var(id))) #: instrs
+
+    in let rec parseBlockItems block_items = match block_items with
+        | [] -> ()
+        | (Ast.S stmt) :: rest -> parseStmt stmt; parseBlockItems rest
+        | (Ast.D decl) :: rest -> parseDecl decl; parseBlockItems rest
+
+    in let parseTopLevel tl = match tl with
+            | Ast.Function (name, block_items) ->
+                let () = parseBlockItems block_items in
+                let () = (Tac.Return (Tac.Constant 0l)) #: instrs in
+                Tac.Function (name, List.rev !instrs)
 
     in match ast with
         | Ast.Program tl -> Tac.Program (parseTopLevel tl)
