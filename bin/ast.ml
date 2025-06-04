@@ -1,18 +1,21 @@
 
 type identifier = string
 
-type unary_op = Complement | Negate | LogNot
+type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
 type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
-                 LogAnd | LogOr | Eq | Neq | Lt | Le | Gt | Ge |
+                 Eq | Neq | Lt | Le | Gt | Ge |
                  Assign
+type binary_op_sp = LogAnd | LogOr | Comma
 
 type expr = Int32 of Int32.t
           | Var of identifier
           | Unary of unary_op * expr
           | Binary of binary_op * expr * expr
+          | BinarySp of binary_op_sp * expr * expr * stmt list
+          | BinaryAssign of binary_op * expr * expr
           | Assignment of expr * expr
 
-type stmt = Return of expr
+and stmt = Return of expr
           | Expression of expr
           | Null
           (*| If of expr * stmt * (stmt option)*)
@@ -29,6 +32,9 @@ let string_unary_op = function
     | Complement -> "~"
     | Negate -> "-"
     | LogNot -> "!"
+    | Increment -> "++"
+    | Decrement -> "--"
+    | Rvalue -> "+"
 
 let string_binary_op = function
     | Add -> "+"
@@ -41,8 +47,6 @@ let string_binary_op = function
     | Xor -> "^"
     | Lshift -> "<<"
     | Rshift -> ">>"
-    | LogAnd -> "&&"
-    | LogOr -> "||"
     | Eq -> "=="
     | Neq -> "!="
     | Lt -> "<"
@@ -50,6 +54,12 @@ let string_binary_op = function
     | Gt -> ">"
     | Ge -> ">="
     | Assign -> "="
+
+let string_binary_op_sp = function
+    | LogAnd -> "&&"
+    | LogOr -> "||"
+    | Comma -> ","
+
 
 let rec print_expr tabs expr =
     print_string (String.make (tabs*2) ' ');
@@ -66,12 +76,24 @@ let rec print_expr tabs expr =
                                       print_expr (tabs+1) right;
                                       print_string (")")
 
+        | BinarySp (op, left, right, between) ->
+            print_string ("BinarySp(" ^ string_binary_op_sp op ^ ",\n");
+            print_expr (tabs+1) left; print_string ",\n";
+            if not (List.is_empty between) then
+                List.iter (fun x -> print_stmt (tabs+1) x) between;
+            print_expr (tabs+1) right;
+
+        | BinaryAssign (op, dst, src) -> print_string ("BinaryAssign(" ^ string_binary_op op ^ ",\n");
+                                          print_expr (tabs+1) dst; print_string ",\n";
+                                          print_expr (tabs+1) src;
+                                          print_string (")")
+
         | Assignment (left, right) -> print_string "Assign(\n";
                                       print_expr (tabs+1) left; print_string ",\n";
                                       print_expr (tabs+1) right;
                                       print_string (")")
 
-let print_stmt tabs stmt =
+and print_stmt tabs stmt =
     print_string (String.make (tabs*2) ' ');
     match stmt with
         | Return expr -> print_string "Return(\n"; (print_expr (tabs+1) expr); print_string ")\n"
@@ -91,7 +113,6 @@ let print_decl tabs decl =
             end
 
 let print_block_item tabs b = 
-    print_string (String.make (tabs*2) ' ');
     match b with
         | S stmt -> print_stmt tabs stmt
         | D decl -> print_decl tabs decl

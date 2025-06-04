@@ -21,20 +21,36 @@ let parse tokens =
                     L.ID id -> id
                     | _ as t -> raise (ParserError ("Expected identifier, but got " ^ (L.string_of_token t)))
 
+    in let postfix : Ast.stmt list ref = ref []
+    in let schedulePostfixIncr var = postfix := (Ast.Expression (Ast.Unary (Ast.Increment, var))) :: !postfix
+    in let schedulePostfixDecr var = postfix := (Ast.Expression (Ast.Unary (Ast.Decrement, var))) :: !postfix
+    in let flushPostfix() =
+        let lst = !postfix in
+        let () = postfix := [] in
+        lst
+
     in let parseOp = function
-        | L.PLUS -> Ast.Add
-        | L.MINUS -> Ast.Sub
-        | L.ASTERISK -> Ast.Mul
-        | L.SLASH -> Ast.Div
-        | L.PERCENT -> Ast.Mod
+        | L.PLUS
+        | L.PLUSASSIGN -> Ast.Add
+        | L.MINUS
+        | L.MINUSASSIGN -> Ast.Sub
+        | L.ASTERISK
+        | L.ASTERISKASSIGN -> Ast.Mul
+        | L.SLASH
+        | L.SLASHASSIGN -> Ast.Div
+        | L.PERCENT
+        | L.PERCENTASSIGN -> Ast.Mod
         | L.ASSIGN -> Ast.Assign
-        | L.PIPE -> Ast.Or
-        | L.AMPERSAND -> Ast.And
-        | L.CARET -> Ast.Xor
-        | L.LSHIFT -> Ast.Lshift
-        | L.RSHIFT -> Ast.Rshift
-        | L.LOGAND -> Ast.LogAnd
-        | L.LOGOR -> Ast.LogOr
+        | L.PIPE
+        | L.PIPEASSIGN -> Ast.Or
+        | L.AMPERSAND
+        | L.AMPERSANDASSIGN -> Ast.And
+        | L.CARET
+        | L.CARETASSIGN -> Ast.Xor
+        | L.LSHIFT
+        | L.LSHIFTASSIGN -> Ast.Lshift
+        | L.RSHIFT
+        | L.RSHIFTASSIGN -> Ast.Rshift
         | L.EQUAL -> Ast.Eq
         | L.NOTEQUAL -> Ast.Neq
         | L.LESS -> Ast.Lt
@@ -43,12 +59,21 @@ let parse tokens =
         | L.GREATEREQ -> Ast.Ge
         | token -> raise (ParserError ("Invalid operator " ^ (Lexer.string_of_token token)))
 
+    in let parseOpSp = function
+        | L.LOGAND -> Ast.LogAnd
+        | L.LOGOR -> Ast.LogOr
+        | token -> raise (ParserError ("Invalid operator sp " ^ (Lexer.string_of_token token)))
+
     in let isAssign = function
-        | Ast.Assign -> true
+        | 2 -> true
+        | _ -> false
+
+    in let hasSequencePoint = function
+        | 5 | 4 | 1 -> true
         | _ -> false
 
     in let prec = function
-        | L.ASSIGN -> 2
+        | L.ASSIGN | L.PLUSASSIGN | L.MINUSASSIGN | L.ASTERISKASSIGN | L.SLASHASSIGN | L.PERCENTASSIGN | L.AMPERSANDASSIGN | L.PIPEASSIGN | L.CARETASSIGN | LSHIFTASSIGN | RSHIFTASSIGN -> 2
         | L.LOGOR -> 4
         | L.LOGAND -> 5
         | L.PIPE -> 6
@@ -64,14 +89,16 @@ let parse tokens =
     in let rec parse_block_items env lvl = match nextToken() with
         | L.EOF -> raise (ParserError "Unmatched left brace")
         | L.RBRACE -> let _ = eatToken() in []
-        | _ -> let (item, env') = (parse_block_item env lvl) in
-               item :: parse_block_items env' lvl
+        | _ -> let (items, env') = (parse_block_item env lvl) in
+               items @ parse_block_items env' lvl
 
     and parse_block_item env lvl = match nextToken() with
-        | L.INT32 -> let (item, env') = parse_decl env lvl in
-                     (Ast.D (item), env')
+        | L.INT32 -> let (items, env') = parse_decl env lvl in
+                     ((List.map (fun x -> Ast.D x) (items)) @
+                     (List.map (fun x -> Ast.S x) (flushPostfix())),
+                        env')
 
-        | _ -> try (S (parse_stmt env lvl), env)
+        | _ -> try (List.map (fun x -> Ast.S x) (parse_stmt env lvl), env)
         with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
 
     and parse_decl env lvl =
@@ -89,7 +116,7 @@ let parse tokens =
             | _ -> None
 
         in let () = expect L.SEMICOLON
-        in (Ast.Declaration (newId, expr)), newEnv
+        in [Ast.Declaration (newId, expr)], newEnv
 
     and parse_stmt env lvl =
         let result = match nextToken() with
@@ -97,45 +124,87 @@ let parse tokens =
         | L.SEMICOLON -> Ast.Null
 
         | _ -> try Ast.Expression (parse_expr env lvl)
-            with ParserError e ->raise (ParserError ("Expected statement\n" ^ e))
-        in let () = expect L.SEMICOLON in result
+            with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))
+        in let () = expect L.SEMICOLON in
+        [result] @ flushPostfix()
 
-    and parse_factor env lvl = match eatToken() with
-        | L.INT32_LIT num -> Ast.Int32 num
+    and parse_primary env lvl =
+        let t = eatToken() in
+        match t with
+            | L.INT32_LIT num -> Ast.Int32 num
+            | L.LPAREN -> let expr = parse_expr env lvl in
+                          let () = expect L.RPAREN in
+                          expr
+            | L.ID id -> begin
+                match Environment.find_opt id env with
+                    | None -> raise (ParserError (id ^ " is not declared."))
+                    | Some (realId, _) -> Ast.Var realId
+            end
+            | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
 
-        | L.ID id -> begin
-            match Environment.find_opt id env with
-                | None -> raise (ParserError (id ^ " is not declared."))
-                | Some (realId, _) -> Ast.Var realId
-        end
 
-        | L.PLUS -> parse_factor env lvl
-        | L.MINUS -> Ast.Unary (Ast.Negate, parse_factor env lvl)
-        | L.COMPLEMENT -> Ast.Unary (Ast.Complement, parse_factor env lvl)
-        | L.BANG -> Ast.Unary (Ast.LogNot, parse_factor env lvl)
 
-        | L.LPAREN -> let expr = parse_expr env lvl in
-                      let () = expect L.RPAREN in
-                      expr
+    and parse_postfix env lvl =
+        let primary = parse_primary env lvl in
+        let rec iter peekToken left = match peekToken with
+            | L.INCREMENT ->
+                let () = begin match left with Ast.Var _ -> () | _ -> raise (ParserError "Suffix Increment operator rhs is not an lvalue") end in
+                let _ = eatToken() in
+                let () = schedulePostfixIncr left in
+                iter (nextToken()) (Ast.Unary (Ast.Rvalue, left))
+            | L.DECREMENT ->
+                let () = begin match left with Ast.Var _ -> () | _ -> raise (ParserError "Suffix Decrement operator rhs is not an lvalue") end in
+                let _ = eatToken() in
+                let () = schedulePostfixDecr left in
+                iter (nextToken()) (Ast.Unary (Ast.Rvalue, left))
+            | _ -> left
 
-        | _ -> raise (ParserError "Expected factor")
+        in iter (nextToken()) primary
+
+    and parse_unary env lvl = match nextToken() with
+        | L.PLUS -> let _ = eatToken() in Ast.Unary (Ast.Rvalue, parse_unary env lvl)
+        | L.MINUS -> let _ = eatToken() in Ast.Unary (Ast.Negate, parse_unary env lvl)
+        | L.COMPLEMENT -> let _ = eatToken() in Ast.Unary (Ast.Complement, parse_unary env lvl)
+        | L.BANG -> let _ = eatToken() in Ast.Unary (Ast.LogNot, parse_unary env lvl)
+        | L.INCREMENT ->
+            let _ = eatToken() in 
+            let right = parse_unary env lvl in
+            let () = begin match right with Ast.Var _ -> () | _ -> raise (ParserError "Prefix Increment operator rhs is not an lvalue") end in
+            Ast.Unary (Ast.Increment, right)
+        | L.DECREMENT -> 
+            let _ = eatToken() in 
+            let right = parse_unary env lvl in
+            let () = begin match right with Ast.Var _ -> () | _ -> raise (ParserError "Prefix Decrement operator rhs is not an lvalue") end in
+            Ast.Unary (Ast.Decrement, right)
+        | _ -> try parse_postfix env lvl
+               with ParserError e -> raise (ParserError ("Expected unary\n"^e))
 
     and parse_expr ?(min_prec=0) env lvl =
-        let left = parse_factor env lvl in
+        let left = parse_unary env lvl in
         let peek = nextToken() in
         let rec iter peekToken left = let p = prec(peekToken) in
-            if p >= min_prec then
-                let op = eatToken() |> parseOp in
+            if p >= min_prec then(
+                if isAssign p then
+                    let op = eatToken() |> parseOp in
 
-                if isAssign op then
                     let () = match left with Ast.Var _ -> () | _ -> raise (ParserError "Expected an lvalue") in
                     let right = parse_expr ~min_prec:p env lvl in
-                    iter (nextToken()) (Ast.Assignment (left, right))
+                    match op with
+                        | Ast.Assign -> iter (nextToken()) (Ast.Assignment (left, right))
+                        | _ -> iter (nextToken()) (Ast.BinaryAssign (op, left, right))
+
+                else if hasSequencePoint p then
+                    let op = eatToken() |> parseOpSp in
+                    let between = flushPostfix() in
+                    let right = parse_expr ~min_prec:(p+1) env lvl in
+                    iter (nextToken()) (Ast.BinarySp (op, left, right, between))
 
                 else
+                    let op = eatToken() |> parseOp in
+
                     let right = parse_expr ~min_prec:(p+1) env lvl in
                     iter (nextToken()) (Ast.Binary (op, left, right))
-            else
+            )else
                 left
         in iter peek left
 

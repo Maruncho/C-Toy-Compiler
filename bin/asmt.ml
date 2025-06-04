@@ -24,6 +24,8 @@ type operand = Imm of Int32.t
 
 type instruction = Mov of (operand * operand)
                  | Unary of (unop * operand)
+                 | Incr of operand
+                 | Decr of operand
                  | Binary of (binop * operand * operand)
                  | Cmp of operand * operand
                  | Idiv of operand
@@ -101,6 +103,9 @@ let instruction_str inst =
     (match inst with
         | Mov (s, d) -> "movl\t" ^ (operand_str s) ^ ", " ^ (operand_str d)
         | Unary (unop, d) -> (unop_str unop) ^ (operand_str d)
+
+        | Incr d -> "incl\t" ^ (operand_str d)
+        | Decr d -> "decl\t" ^ (operand_str d)
 
         | Binary (Sal as binop, s, d)
         | Binary (Sar as binop, s, d) -> (binop_str binop) ^ (operand_str ~asm_type:Byte s) ^ ", " ^ (operand_str d)

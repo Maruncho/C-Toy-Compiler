@@ -5,6 +5,7 @@ let parseUnaryOp = function
     | Tac.Negate -> Asmt.Neg
     | Tac.Complement -> Asmt.Not
     | Tac.Not -> failwith "Tacky Unary Operator is not simple to Asmt."
+    | Tac.Incr | Tac.Decr -> failwith "Tacky Increment and Decrement are not handled as a normal unary"
 
 let parseBinaryOp = function
     | Tac.Add -> Asmt.Add
@@ -60,6 +61,8 @@ and parseInstruction inst =
             Asmt.Mov (parseOperand d, Asmt.Reg Asmt.RAX);
             Asmt.Ret]
         | Tac.Unary (Tac.Not, s ,d) -> parseInstruction (Tac.Binary (Tac.Equal, s, Tac.Constant 0l, d))
+        | Tac.Unary (Tac.Incr, d, _) -> [Asmt.Incr (parseOperand d)]
+        | Tac.Unary (Tac.Decr, d, _) -> [Asmt.Decr (parseOperand d)]
         | Tac.Unary (unop, s, d) ->
             let src = parseOperand s in
             let dst = parseOperand d in
@@ -119,6 +122,8 @@ let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
     in let newInstructions = List.map (fun instr -> match instr with
         | Asmt.Mov (s, d) -> Asmt.Mov (f s, f d)
         | Asmt.Unary (x1, d) -> Asmt.Unary (x1, f d)
+        | Asmt.Incr d -> Asmt.Incr (f d)
+        | Asmt.Decr d -> Asmt.Decr (f d)
         | Asmt.Binary (x1, s, d) -> Asmt.Binary (x1, f s, f d)
         | Asmt.Cmp (s, d) -> Asmt.Cmp (f s, f d)
         | Asmt.Idiv s -> Asmt.Idiv (f s)

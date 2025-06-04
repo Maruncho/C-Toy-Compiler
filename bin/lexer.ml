@@ -18,7 +18,6 @@ type token =
     | ASTERISK
     | SLASH
     | PERCENT
-    | ASSIGN
     | AMPERSAND
     | PIPE
     | CARET
@@ -36,6 +35,17 @@ type token =
     | GREATER
     | LESSEQ
     | GREATEREQ
+    | ASSIGN
+    | PLUSASSIGN
+    | MINUSASSIGN
+    | ASTERISKASSIGN
+    | SLASHASSIGN
+    | PERCENTASSIGN
+    | AMPERSANDASSIGN
+    | PIPEASSIGN
+    | CARETASSIGN
+    | LSHIFTASSIGN
+    | RSHIFTASSIGN
     | EOF
 
 let string_of_token = function
@@ -54,7 +64,6 @@ let string_of_token = function
     | ASTERISK -> "*"
     | SLASH -> "/"
     | PERCENT -> "%"
-    | ASSIGN -> "="
     | AMPERSAND -> "&"
     | PIPE -> "|"
     | CARET -> "^"
@@ -72,6 +81,17 @@ let string_of_token = function
     | GREATER -> ">"
     | LESSEQ -> "<="
     | GREATEREQ -> ">="
+    | ASSIGN -> "="
+    | PLUSASSIGN -> "+="
+    | MINUSASSIGN -> "-="
+    | ASTERISKASSIGN -> "*="
+    | SLASHASSIGN -> "/="
+    | PERCENTASSIGN -> "%="
+    | AMPERSANDASSIGN -> "&="
+    | PIPEASSIGN -> "|="
+    | CARETASSIGN -> "^="
+    | LSHIFTASSIGN -> "<<="
+    | RSHIFTASSIGN -> ">>="
     | EOF -> "eof"
 
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
@@ -115,6 +135,36 @@ let token_regexes =
 ;
     (* >= *)
     (re {|(>=)|}, (fun _ -> GREATEREQ))
+;
+    (* += *)
+    (re {|(\+=)|}, (fun _ -> PLUSASSIGN))
+;
+    (* -= *)
+    (re {|(-=)|}, (fun _ -> MINUSASSIGN))
+;
+    (* *= *)
+    (re {|(\*=)|}, (fun _ -> ASTERISKASSIGN))
+;
+    (* /= *)
+    (re {|(\/=)|}, (fun _ -> SLASHASSIGN))
+;
+    (* %= *)
+    (re {|(%=)|}, (fun _ -> PERCENTASSIGN))
+;
+    (* &= *)
+    (re {|(&=)|}, (fun _ -> AMPERSANDASSIGN))
+;
+    (* |= *)
+    (re {|(\|=)|}, (fun _ -> PIPEASSIGN))
+;
+    (* ^= *)
+    (re {|(\^=)|}, (fun _ -> CARETASSIGN))
+;
+    (* <<= *)
+    (re {|(<<=)|}, (fun _ -> LSHIFTASSIGN))
+;
+    (* >>= *)
+    (re {|(>>=)|}, (fun _ -> RSHIFTASSIGN))
 ;
     (* = *)
     (re {|(=)|}, (fun _ -> ASSIGN))

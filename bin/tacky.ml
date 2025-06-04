@@ -1,7 +1,7 @@
 
 type identifier = string
 
-type unary_op = Complement | Negate | Not
+type unary_op = Complement | Negate | Not | Incr | Decr
 type binary_op = Add | Subtract | Multiply | Divide | Remainder |
                  And | Or | Xor | LShift | RShift |
                  Equal | NotEqual | LessThan | LessOrEqual | GreaterThan | GreaterOrEqual
@@ -26,6 +26,8 @@ let unary_op_str = function
     | Complement -> "NOT"
     | Negate -> "NEG"
     | Not -> "LNOT"
+    | Incr -> "INCR"
+    | Decr -> "DECR"
 
 let binary_op_str = function
     | Add -> "ADD"

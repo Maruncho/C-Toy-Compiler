@@ -16,6 +16,9 @@ let tackify ast =
         | Ast.Negate -> Tac.Negate
         | Ast.Complement -> Tac.Complement
         | Ast.LogNot -> Tac.Not
+        | Ast.Increment -> Tac.Incr
+        | Ast.Decrement -> Tac.Decr
+        | Ast.Rvalue -> failwith "Rvalue is a useless unop and should be just unboxed(tackify.ml)"
 
     in let parseBinaryOp = function
         | Ast.Add -> Tac.Add
@@ -35,13 +38,21 @@ let tackify ast =
         | Ast.Gt -> Tac.GreaterThan
         | Ast.Ge -> Tac.GreaterOrEqual
         | Ast.Assign -> failwith "assignment operator is not handled by parseBinary"
-        | Ast.LogAnd | Ast.LogOr -> failwith "and and/or or are not really binary ops"
 
     in let rec parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
             | Ast.Var id -> Tac.Var id
 
+            | Ast.Unary (Ast.Increment, dst) ->
+                let dst = parseExpr dst in
+                let () = (Tac.Unary (Tac.Incr, dst, dst)) #: instrs in
+                dst
+            | Ast.Unary (Ast.Decrement, dst) ->
+                let dst = parseExpr dst in
+                let () = (Tac.Unary (Tac.Decr, dst, dst)) #: instrs in
+                dst
+            | Ast.Unary (Ast.Rvalue, src) -> parseExpr src
             | Ast.Unary (op, expr) ->
                 let src = parseExpr expr in
                 let dst = Tac.Var (newTemp()) in
@@ -49,11 +60,12 @@ let tackify ast =
                 let () = (Tac.Unary (op, src, dst)) #: instrs in
                 dst
 
-            | Ast.Binary (Ast.LogAnd, left, right) ->
+            | Ast.BinarySp (Ast.LogAnd, left, right, between) ->
                 let false_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
                 let () = (Tac.JumpIfZero (left, false_lbl)) #: instrs in
+                let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfZero (right, false_lbl)) #: instrs in
                 let result = Tac.Var (newTemp()) in
@@ -64,11 +76,12 @@ let tackify ast =
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.Binary (Ast.LogOr, left, right) ->
+            | Ast.BinarySp (Ast.LogOr, left, right, between) ->
                 let true_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
                 let () = (Tac.JumpIfNotZero (left, true_lbl)) #: instrs in
+                let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfNotZero (right, true_lbl)) #: instrs in
                 let result = Tac.Var (newTemp()) in
@@ -79,12 +92,22 @@ let tackify ast =
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
+            | Ast.BinarySp (Ast.Comma, _, _, _) -> failwith "TODO: Add Comma"
+
             | Ast.Binary (op, left, right) ->
                 let src1 = parseExpr left in
                 let src2 = parseExpr right in
                 let dst = Tac.Var (newTemp()) in
                 let op = parseBinaryOp op in
                 let () = (Tac.Binary (op, src1, src2, dst)) #: instrs in
+                dst
+
+            | Ast.BinaryAssign (op, dst, src) ->
+                let () = match dst with Ast.Var _ -> () | _ -> failwith "BinaryAssign dst is not a var" in
+                let src = parseExpr src in
+                let dst = parseExpr dst in
+                let op = parseBinaryOp op in
+                let () = (Tac.Binary (op, dst, src, dst)) #: instrs in
                 dst
 
             | Ast.Assignment (left, right) ->
