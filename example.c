@@ -1,5 +1,5 @@
 
 int main(void) {
-    int a = 0;
-    return a++ && 1;
+    int n = 5;
+     return n++ == 5 ? 10 : 1;
 }

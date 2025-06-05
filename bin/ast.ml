@@ -14,11 +14,12 @@ type expr = Int32 of Int32.t
           | BinarySp of binary_op_sp * expr * expr * stmt list
           | BinaryAssign of binary_op * expr * expr
           | Assignment of expr * expr
+          | Ternary of expr * expr * expr * stmt list
 
 and stmt = Return of expr
           | Expression of expr
+          | If of expr * stmt * (stmt option)
           | Null
-          (*| If of expr * stmt * (stmt option)*)
 
 type decl = Declaration of identifier * expr option
 
@@ -93,11 +94,23 @@ let rec print_expr tabs expr =
                                       print_expr (tabs+1) right;
                                       print_string (")")
 
+        | Ternary (cond, th, el, postfix) ->
+            print_string "Ternary(\n";
+            print_expr (tabs+1) cond; print_string ",\n";
+            if not (List.is_empty postfix) then
+                List.iter (fun x -> print_stmt (tabs+1) x) postfix;
+            print_expr (tabs+1) th; print_string ",\n";
+            print_expr (tabs+1) el;
+            print_string (")")
+
+
 and print_stmt tabs stmt =
     print_string (String.make (tabs*2) ' ');
     match stmt with
         | Return expr -> print_string "Return(\n"; (print_expr (tabs+1) expr); print_string ")\n"
         | Expression expr -> print_string "Expression(\n"; (print_expr (tabs+1) expr); print_string ")\n"
+        | If (cond, th, Some el) -> print_string "If(\n"; (print_expr (tabs+1) cond); print_string ",\n";  print_stmt (tabs+1) th; print_stmt (tabs+1) el
+        | If (cond, th, None) -> print_string "If(\n"; (print_expr (tabs+1) cond); print_string ",\n"; (print_stmt (tabs+1) th);
         | Null -> print_string "<Empty Statement>\n"
 
 let print_decl tabs decl =

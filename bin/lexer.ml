@@ -8,11 +8,15 @@ type token =
     | INT32
     | VOID
     | RETURN
+    | IF
+    | ELSE
     | LPAREN
     | RPAREN
     | LBRACE
     | RBRACE
+    | COLON
     | SEMICOLON
+    | QUESTION
     | PLUS
     | MINUS
     | ASTERISK
@@ -53,12 +57,16 @@ let string_of_token = function
     | INT32_LIT num -> (Int32.to_string num)
     | INT32 -> "int"
     | VOID -> "void"
+    | IF -> "if"
+    | ELSE -> "else"
     | RETURN -> "return"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACE -> "{"
     | RBRACE -> "}"
+    | COLON -> ":"
     | SEMICOLON -> ";"
+    | QUESTION -> "?"
     | PLUS -> "+"
     | MINUS -> "-"
     | ASTERISK -> "*"
@@ -103,6 +111,8 @@ let token_regexes =
     (fun str -> match str with
         | "int" -> INT32
         | "void" -> VOID
+        | "if" -> IF
+        | "else" -> ELSE
         | "return" -> RETURN
         | _ -> ID str))
 ;
@@ -120,9 +130,16 @@ let token_regexes =
 ;
     (* } *)
     (re {|(\})|}, (fun _ -> RBRACE))
+
+;
+    (* : *)
+    (re {|(:)|}, (fun _ -> COLON))
 ;
     (* ; *)
     (re {|(;)|}, (fun _ -> SEMICOLON))
+;
+    (* ? *)
+    (re {|(\?)|}, (fun _ -> QUESTION))
 ;
     (* == *)
     (re {|(==)|}, (fun _ -> EQUAL))

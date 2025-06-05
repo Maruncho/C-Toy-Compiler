@@ -116,12 +116,48 @@ let tackify ast =
                 let () = (Tac.Copy (src, dst)) #: instrs in
                 dst
 
+            | Ast.Ternary (cond, th, el, postfix) -> 
+                let cond = parseExpr cond in
+                let else_lbl = newLbl() in
+                let end_lbl = newLbl() in
+                let result = Tac.Var(newTemp()) in
+                let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
+                let () = List.iter (fun stmt -> parseStmt stmt) postfix in
+                let th = parseExpr th in
+                let () = (Tac.Copy (th, result)) #: instrs in
+                let () = (Tac.Jump end_lbl) #: instrs in
+                let () = (Tac.Label else_lbl) #: instrs in
+                let () = List.iter (fun stmt -> parseStmt stmt) postfix in
+                let el = parseExpr el in
+                let () = (Tac.Copy (el, result)) #: instrs in
+                let () = (Tac.Label end_lbl) #: instrs in
+                result
+
+
     and parseStmt stmt =
         match stmt with
             | Ast.Return expr ->
                 let src = parseExpr expr in
                 (Tac.Return src) #: instrs
             | Ast.Expression expr -> let _ = parseExpr expr in ()
+
+            | Ast.If (cond, th, None) ->
+                let cond = parseExpr cond in
+                let end_lbl = newLbl() in
+                let () = (Tac.JumpIfZero (cond, end_lbl)) #: instrs in
+                let () = parseStmt th in
+                (Tac.Label end_lbl) #: instrs
+            | Ast.If (cond, th, Some el) ->
+                let cond = parseExpr cond in
+                let else_lbl = newLbl() in
+                let end_lbl = newLbl() in
+                let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
+                let () = parseStmt th in
+                let () = (Tac.Jump end_lbl) #: instrs in
+                let () = (Tac.Label else_lbl) #: instrs in
+                let () = parseStmt el in
+                (Tac.Label end_lbl) #: instrs
+
             | Ast.Null -> ()
 
     and parseDecl decl =

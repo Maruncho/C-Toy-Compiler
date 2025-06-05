@@ -3,6 +3,7 @@ type mode = Lex | Parse | Codegen | Tacky | Free
 let m = if Core.Array.length (Core.Sys.get_argv()) >= 3 then
     (match (Core.Sys.get_argv()).(2) with
     | "--lex" -> Lex
+    | "--validate"
     | "--parse" -> Parse
     | "--codegen" -> Codegen
     | "--tacky" -> Tacky

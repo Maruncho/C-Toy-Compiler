@@ -68,12 +68,17 @@ let parse tokens =
         | 2 -> true
         | _ -> false
 
+    in let isTernary = function
+        | 3 -> true
+        | _ -> false
+
     in let hasSequencePoint = function
         | 5 | 4 | 1 -> true
         | _ -> false
 
     in let prec = function
         | L.ASSIGN | L.PLUSASSIGN | L.MINUSASSIGN | L.ASTERISKASSIGN | L.SLASHASSIGN | L.PERCENTASSIGN | L.AMPERSANDASSIGN | L.PIPEASSIGN | L.CARETASSIGN | LSHIFTASSIGN | RSHIFTASSIGN -> 2
+        | L.QUESTION -> 3
         | L.LOGOR -> 4
         | L.LOGAND -> 5
         | L.PIPE -> 6
@@ -120,13 +125,25 @@ let parse tokens =
 
     and parse_stmt env lvl =
         let result = match nextToken() with
-        | L.RETURN -> let _ = eatToken() in Ast.Return (parse_expr env lvl)
-        | L.SEMICOLON -> Ast.Null
+        | L.RETURN -> let _ = eatToken() in let r = Ast.Return (parse_expr env lvl) in let () = expect L.SEMICOLON in r
+        | L.SEMICOLON -> let () = expect L.SEMICOLON in Ast.Null
+        | L.IF ->
+            let _ = eatToken() in
+            let () = expect L.LPAREN in
+            let cond = parse_expr env lvl in
+            let () = expect L.RPAREN in
+            (*TODO: FIX WITH COMPOUND STATEMENTS*)
+            let true_branch = List.hd (parse_stmt env lvl) in
+            let else_branch =
+                if nextToken() = L.ELSE then
+                    let _ = eatToken() in
+                    Some (List.hd (parse_stmt env lvl))
+                else None
+            in Ast.If (cond, true_branch, else_branch)
 
-        | _ -> try Ast.Expression (parse_expr env lvl)
+        | _ -> try let r = Ast.Expression (parse_expr env lvl) in let () = expect L.SEMICOLON in r
             with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))
-        in let () = expect L.SEMICOLON in
-        [result] @ flushPostfix()
+        in [result] @ flushPostfix()
 
     and parse_primary env lvl =
         let t = eatToken() in
@@ -141,8 +158,6 @@ let parse tokens =
                     | Some (realId, _) -> Ast.Var realId
             end
             | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
-
-
 
     and parse_postfix env lvl =
         let primary = parse_primary env lvl in
@@ -193,6 +208,14 @@ let parse tokens =
                         | Ast.Assign -> iter (nextToken()) (Ast.Assignment (left, right))
                         | _ -> iter (nextToken()) (Ast.BinaryAssign (op, left, right))
 
+                else if isTernary p then
+                    let _ = eatToken() in
+                    let th = Ast.Unary(Ast.Rvalue, parse_expr ~min_prec:0 env lvl) in
+                    let () = expect L.COLON in
+                    let el = Ast.Unary(Ast.Rvalue, parse_expr ~min_prec:p env lvl) in
+                    let postfix = flushPostfix() in
+                    iter (nextToken()) (Ast.Ternary (left, th, el, postfix))
+
                 else if hasSequencePoint p then
                     let op = eatToken() |> parseOpSp in
                     let between = flushPostfix() in
@@ -207,8 +230,6 @@ let parse tokens =
             )else
                 left
         in iter peek left
-
-
 
     and parse_program() =
         let env = Environment.empty in
