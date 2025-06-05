@@ -158,6 +158,8 @@ let tackify ast =
                 let () = parseStmt el in
                 (Tac.Label end_lbl) #: instrs
 
+            | Ast.Compound items -> parseBlockItems items
+
             | Ast.Null -> ()
 
     and parseDecl decl =
@@ -167,7 +169,7 @@ let tackify ast =
                 let src = parseExpr expr in
                 (Tac.Copy (src, Tac.Var(id))) #: instrs
 
-    in let rec parseBlockItems block_items = match block_items with
+    and parseBlockItems block_items = match block_items with
         | [] -> ()
         | (Ast.S stmt) :: rest -> parseStmt stmt; parseBlockItems rest
         | (Ast.D decl) :: rest -> parseDecl decl; parseBlockItems rest

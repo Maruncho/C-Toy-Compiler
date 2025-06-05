@@ -132,14 +132,15 @@ let parse tokens =
             let () = expect L.LPAREN in
             let cond = parse_expr env lvl in
             let () = expect L.RPAREN in
-            (*TODO: FIX WITH COMPOUND STATEMENTS*)
-            let true_branch = List.hd (parse_stmt env lvl) in
+            let postfixAfterCond = flushPostfix() in
+            let true_branch = Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl)) in
             let else_branch =
                 if nextToken() = L.ELSE then
                     let _ = eatToken() in
-                    Some (List.hd (parse_stmt env lvl))
+                    Some (Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl))) 
                 else None
             in Ast.If (cond, true_branch, else_branch)
+        | L.LBRACE -> let _ = eatToken() in Ast.Compound (parse_block_items env (lvl+1))
 
         | _ -> try let r = Ast.Expression (parse_expr env lvl) in let () = expect L.SEMICOLON in r
             with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))

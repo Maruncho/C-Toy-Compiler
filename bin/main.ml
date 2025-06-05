@@ -14,6 +14,7 @@ let file = if Core.Array.length (Core.Sys.get_argv()) >= 2 then
         (Core.Sys.get_argv()).(1)
 else "./example.c"
 
+let print_string_err = Out_channel.output_string (Out_channel.stderr)
 
 let contents = Core.In_channel.read_all file
 
@@ -37,5 +38,5 @@ let () = try
     let outputFile = (String.sub file 0 ((String.length file) - 2)) ^ ".s"
     in Core.Out_channel.output_string (Core.Out_channel.create outputFile) assembly
 with
-    | Lexer.LexError m -> print_string (m ^ "\n"); exit 1;
-    | Parser.ParserError m -> print_string (m ^ "\n"); exit 1;
+    | Lexer.LexError m -> print_string_err (m ^ "\n"); exit 1;
+    | Parser.ParserError m -> print_string_err (m ^ "\n"); exit 1;

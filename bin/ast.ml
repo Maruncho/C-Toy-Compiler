@@ -1,6 +1,7 @@
 
 type identifier = string
 
+
 type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
 type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
                  Eq | Neq | Lt | Le | Gt | Ge |
@@ -16,16 +17,18 @@ type expr = Int32 of Int32.t
           | Assignment of expr * expr
           | Ternary of expr * expr * expr * stmt list
 
+and block_item = S of stmt | D of decl
+and block = block_item list
+
 and stmt = Return of expr
           | Expression of expr
           | If of expr * stmt * (stmt option)
+          | Compound of block
           | Null
 
-type decl = Declaration of identifier * expr option
+and decl = Declaration of identifier * expr option
 
-type block_item = S of stmt | D of decl
-
-type toplevel = Function of string * block_item list
+type toplevel = Function of string * block
 
 type program = Program of toplevel
 
@@ -111,9 +114,14 @@ and print_stmt tabs stmt =
         | Expression expr -> print_string "Expression(\n"; (print_expr (tabs+1) expr); print_string ")\n"
         | If (cond, th, Some el) -> print_string "If(\n"; (print_expr (tabs+1) cond); print_string ",\n";  print_stmt (tabs+1) th; print_stmt (tabs+1) el
         | If (cond, th, None) -> print_string "If(\n"; (print_expr (tabs+1) cond); print_string ",\n"; (print_stmt (tabs+1) th);
+        | Compound item_list ->
+            print_string ("Block{\n");
+            List.iter (fun x -> print_block_item (tabs+1) x) item_list;
+            print_string (String.make (tabs*2) ' ');
+            print_string "}\n"
         | Null -> print_string "<Empty Statement>\n"
 
-let print_decl tabs decl =
+and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');
     match decl with
         Declaration (id, expr_opt) ->
@@ -125,7 +133,7 @@ let print_decl tabs decl =
                             print_string ")\n"
             end
 
-let print_block_item tabs b = 
+and print_block_item tabs b = 
     match b with
         | S stmt -> print_stmt tabs stmt
         | D decl -> print_decl tabs decl
