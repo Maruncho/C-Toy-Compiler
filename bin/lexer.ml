@@ -7,9 +7,10 @@ type token =
     | INT32_LIT of Int32.t
     | INT32
     | VOID
-    | RETURN
     | IF
     | ELSE
+    | GOTO
+    | RETURN
     | LPAREN
     | RPAREN
     | LBRACE
@@ -60,6 +61,7 @@ let string_of_token = function
     | IF -> "if"
     | ELSE -> "else"
     | RETURN -> "return"
+    | GOTO -> "goto"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACE -> "{"
@@ -114,6 +116,7 @@ let token_regexes =
         | "if" -> IF
         | "else" -> ELSE
         | "return" -> RETURN
+        | "goto" -> GOTO
         | _ -> ID str))
 ;
     (* Integer32 *)

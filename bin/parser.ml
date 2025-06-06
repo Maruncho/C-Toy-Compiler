@@ -8,6 +8,9 @@ let parse tokens =
     in let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
+    in let nextNextToken() = match !tokens with
+            | _ :: t :: _ -> t
+            | _ -> failwith "Went beyond EOF"
     in let eatToken() = match !tokens with
             | [] -> failwith "Trying to eat beyond EOF"
             | h :: t -> let () = tokens := t in h
@@ -125,8 +128,8 @@ let parse tokens =
 
     and parse_stmt env lvl =
         let result = match nextToken() with
-        | L.RETURN -> let _ = eatToken() in let r = Ast.Return (parse_expr env lvl) in let () = expect L.SEMICOLON in r
-        | L.SEMICOLON -> let () = expect L.SEMICOLON in Ast.Null
+        | L.RETURN -> let _ = eatToken() in let r = Ast.Return (parse_expr env lvl) in let () = expect L.SEMICOLON in [r]
+            | L.SEMICOLON -> let () = expect L.SEMICOLON in [Ast.Null]
         | L.IF ->
             let _ = eatToken() in
             let () = expect L.LPAREN in
@@ -137,14 +140,23 @@ let parse tokens =
             let else_branch =
                 if nextToken() = L.ELSE then
                     let _ = eatToken() in
-                    Some (Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl))) 
+                    Some (Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl)))
                 else None
-            in Ast.If (cond, true_branch, else_branch)
-        | L.LBRACE -> let _ = eatToken() in Ast.Compound (parse_block_items env (lvl+1))
+            in [Ast.If (cond, true_branch, else_branch)]
+        | L.LBRACE -> let _ = eatToken() in [Ast.Compound (parse_block_items env (lvl+1))]
+        | L.GOTO -> let _ = eatToken() in let id = expectIdentifier() in let () = expect L.SEMICOLON in [Ast.Goto id]
+        (*Label. They are kind of not statements, but no one uses goto so it doesn't deserve its own type.*)
+        (* C23 *)
+        (*| L.ID lbl when nextNextToken() = L.COLON ->*)
+        (*    let _ = eatToken() in let _ = eatToken() in Ast.Label lbl*)
+        (* C17 *)
+        | L.ID lbl when nextNextToken() = L.COLON ->
+            let _ = eatToken() in let _ = eatToken() in (Ast.Label lbl) :: (parse_stmt env lvl)
 
-        | _ -> try let r = Ast.Expression (parse_expr env lvl) in let () = expect L.SEMICOLON in r
+
+        | _ -> try let r = Ast.Expression (parse_expr env lvl) in let () = expect L.SEMICOLON in [r]
             with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))
-        in [result] @ flushPostfix()
+        in result @ flushPostfix()
 
     and parse_primary env lvl =
         let t = eatToken() in
@@ -245,5 +257,6 @@ let parse tokens =
         let () = expect EOF in
         result
 
-    in parse_program()
+    in try parse_program() |> SemantGoto.parse with
+        | SemantGoto.ParserError e -> raise (ParserError e)
 

@@ -104,8 +104,8 @@ let instruction_str inst =
         | Mov (s, d) -> "movl\t" ^ (operand_str s) ^ ", " ^ (operand_str d)
         | Unary (unop, d) -> (unop_str unop) ^ (operand_str d)
 
-        | Incr d -> "incl\t" ^ (operand_str d)
         | Decr d -> "decl\t" ^ (operand_str d)
+        | Incr d -> "incl\t" ^ (operand_str d)
 
         | Binary (Sal as binop, s, d)
         | Binary (Sar as binop, s, d) -> (binop_str binop) ^ (operand_str ~asm_type:Byte s) ^ ", " ^ (operand_str d)

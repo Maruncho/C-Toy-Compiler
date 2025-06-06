@@ -161,6 +161,8 @@ let tackify ast =
             | Ast.Compound items -> parseBlockItems items
 
             | Ast.Null -> ()
+            | Ast.Label lbl -> (Tac.Label lbl) #: instrs
+            | Ast.Goto lbl -> (Tac.Jump lbl) #: instrs
 
     and parseDecl decl =
         match decl with

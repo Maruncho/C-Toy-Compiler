@@ -1,5 +1,7 @@
 
 int main(void) {
-    int n = 5;
-     return n++ == 5 ? 10 : 1;
+    int x = 10;
+    x++;
+    x - 10 ? 0 : x--;
+    return x;
 }

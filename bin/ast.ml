@@ -21,10 +21,12 @@ and block_item = S of stmt | D of decl
 and block = block_item list
 
 and stmt = Return of expr
-          | Expression of expr
-          | If of expr * stmt * (stmt option)
-          | Compound of block
-          | Null
+         | Expression of expr
+         | If of expr * stmt * (stmt option)
+         | Compound of block
+         | Null
+         | Label of string
+         | Goto of string
 
 and decl = Declaration of identifier * expr option
 
@@ -120,6 +122,8 @@ and print_stmt tabs stmt =
             print_string (String.make (tabs*2) ' ');
             print_string "}\n"
         | Null -> print_string "<Empty Statement>\n"
+        | Label lbl -> print_string ("Label("^lbl^")\n")
+        | Goto lbl -> print_string ("Goto("^lbl^")\n")
 
 and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');

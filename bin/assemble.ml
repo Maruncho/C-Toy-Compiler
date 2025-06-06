@@ -123,7 +123,7 @@ let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
         | Asmt.Mov (s, d) -> Asmt.Mov (f s, f d)
         | Asmt.Unary (x1, d) -> Asmt.Unary (x1, f d)
         | Asmt.Incr d -> Asmt.Incr (f d)
-        | Asmt.Decr d -> Asmt.Incr (f d)
+        | Asmt.Decr d -> Asmt.Decr (f d)
         | Asmt.Binary (x1, s, d) -> Asmt.Binary (x1, f s, f d)
         | Asmt.Cmp (s, d) -> Asmt.Cmp (f s, f d)
         | Asmt.Idiv s -> Asmt.Idiv (f s)
