@@ -11,6 +11,11 @@ type token =
     | ELSE
     | GOTO
     | RETURN
+    | DO
+    | WHILE
+    | FOR
+    | BREAK
+    | CONTINUE
     | LPAREN
     | RPAREN
     | LBRACE
@@ -62,6 +67,11 @@ let string_of_token = function
     | ELSE -> "else"
     | RETURN -> "return"
     | GOTO -> "goto"
+    | DO -> "do"
+    | WHILE -> "while"
+    | FOR -> "for"
+    | BREAK -> "break"
+    | CONTINUE -> "continue"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACE -> "{"
@@ -116,6 +126,11 @@ let token_regexes =
         | "if" -> IF
         | "else" -> ELSE
         | "return" -> RETURN
+        | "do" ->  DO
+        | "while" -> WHILE
+        | "for" -> FOR
+        | "break" -> BREAK
+        | "continue" -> CONTINUE
         | "goto" -> GOTO
         | _ -> ID str))
 ;

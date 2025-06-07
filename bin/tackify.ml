@@ -39,7 +39,30 @@ let tackify ast =
         | Ast.Ge -> Tac.GreaterOrEqual
         | Ast.Assign -> failwith "assignment operator is not handled by parseBinary"
 
-    in let rec parseExpr expr =
+    in let rec helpParseConditionWithPostfix postfix cond =
+        let oldToNewTemps = List.fold_left (fun lst stmt -> (match stmt with
+            | Ast.Expression (Ast.Unary (Ast.Increment, Ast.Var old)) -> (old, newTemp()) :: lst
+            | Ast.Expression (Ast.Unary (Ast.Decrement, Ast.Var old)) -> (old, newTemp()) :: lst
+            | _ -> lst
+        )) [] postfix
+        in let rec walkExpr expr = match expr with
+            | Ast.Var old -> begin match List.assoc_opt old oldToNewTemps with
+                | None -> Ast.Var old
+                | Some neww -> Ast.Var neww
+            end
+            | Ast.Unary (op, expr) -> Ast.Unary (op, walkExpr expr)
+            | Ast.Binary (op, expr1, expr2) -> Ast.Binary (op, walkExpr expr1, walkExpr expr2)
+            | Ast.BinarySp (op, expr1_sp, expr2) -> Ast.BinarySp (op, expr1_sp, walkExpr expr2)
+            | Ast.BinaryAssign (op, var, expr) -> Ast.BinaryAssign (op, walkExpr var, walkExpr expr)
+            | Ast.Assignment (var, expr) -> Ast.Assignment (walkExpr var, walkExpr expr)
+            | Ast.Ternary (cond_sp, th, el) -> Ast.Ternary (cond_sp, walkExpr th, walkExpr el)
+            | _ -> expr
+
+        in let () = List.iter (fun (x,y) -> (Tac.Copy (Tac.Var x, Tac.Var y)) #: instrs) oldToNewTemps
+        in let () = List.iter (fun x -> parseStmt x) postfix
+        in walkExpr cond
+
+    and parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
             | Ast.Var id -> Tac.Var id
@@ -60,7 +83,7 @@ let tackify ast =
                 let () = (Tac.Unary (op, src, dst)) #: instrs in
                 dst
 
-            | Ast.BinarySp (Ast.LogAnd, left, right, between) ->
+            | Ast.BinarySp (Ast.LogAnd, (left, between), right) ->
                 let false_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
@@ -76,7 +99,7 @@ let tackify ast =
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.BinarySp (Ast.LogOr, left, right, between) ->
+            | Ast.BinarySp (Ast.LogOr, (left, between), right) ->
                 let true_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
@@ -92,7 +115,7 @@ let tackify ast =
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.BinarySp (Ast.Comma, _, _, _) -> failwith "TODO: Add Comma"
+            | Ast.BinarySp (Ast.Comma, _, _) -> failwith "TODO: Add Comma"
 
             | Ast.Binary (op, left, right) ->
                 let src1 = parseExpr left in
@@ -116,7 +139,7 @@ let tackify ast =
                 let () = (Tac.Copy (src, dst)) #: instrs in
                 dst
 
-            | Ast.Ternary (cond, th, el, postfix) -> 
+            | Ast.Ternary ((cond, postfix), th, el) -> 
                 let cond = parseExpr cond in
                 let else_lbl = newLbl() in
                 let end_lbl = newLbl() in
@@ -141,14 +164,16 @@ let tackify ast =
                 (Tac.Return src) #: instrs
             | Ast.Expression expr -> let _ = parseExpr expr in ()
 
-            | Ast.If (cond, th, None) ->
-                let cond = parseExpr cond in
+            | Ast.If ((cond, postfix), th, None) ->
+                let newCond = helpParseConditionWithPostfix postfix cond in
+                let cond = parseExpr newCond in
                 let end_lbl = newLbl() in
                 let () = (Tac.JumpIfZero (cond, end_lbl)) #: instrs in
                 let () = parseStmt th in
                 (Tac.Label end_lbl) #: instrs
-            | Ast.If (cond, th, Some el) ->
-                let cond = parseExpr cond in
+            | Ast.If ((cond, postfix), th, Some el) ->
+                let newCond = helpParseConditionWithPostfix postfix cond in
+                let cond = parseExpr newCond in
                 let else_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
@@ -158,8 +183,59 @@ let tackify ast =
                 let () = parseStmt el in
                 (Tac.Label end_lbl) #: instrs
 
+            | Ast.DoWhile (body, (cond, postfix), (continue, break)) ->
+                let begin_lbl = newLbl() in
+                let () = (Tac.Label begin_lbl) #: instrs in
+                let () = parseStmt body in
+                let () = (Tac.Label continue) #: instrs in
+                let newCond = helpParseConditionWithPostfix postfix cond in
+                let cond = parseExpr newCond in
+                let () = (Tac.JumpIfNotZero (cond, begin_lbl)) #: instrs in
+                (Tac.Label break) #: instrs
+
+            | Ast.While ((cond, postfix), body, (continue, break)) ->
+                let () = (Tac.Label continue) #: instrs in
+                let newCond = helpParseConditionWithPostfix postfix cond in
+                let cond = parseExpr newCond in
+                let () = (Tac.JumpIfZero (cond, break)) #: instrs in
+                let () = parseStmt body in
+                let () = (Tac.Jump continue) #: instrs in
+                (Tac.Label break) #: instrs
+
+            | Ast.For (init_opt, cond_opt, post_opt, body, (continue, break)) ->
+                let () = begin match init_opt with
+                    | None -> ()
+                    | Some Ast.InitExpr (init, postfix) ->
+                        let _ = parseExpr init in
+                        List.iter (fun stmt -> parseStmt stmt) postfix
+                    | Some Ast.InitDecl (init, postfix) ->
+                        let () = parseDecl init in
+                        List.iter (fun stmt -> parseStmt stmt) postfix
+                end in
+                let begin_lbl = newLbl() in
+                let () = (Tac.Label begin_lbl) #: instrs in
+                let cond = begin match cond_opt with
+                    | None -> None
+                    | Some (cond, postfix) ->
+                        let newCond = helpParseConditionWithPostfix postfix cond in
+                        Some (parseExpr newCond)
+                end in
+                let () = (match cond with None -> () | Some cond -> (Tac.JumpIfZero (cond, break)) #: instrs) in
+                let () = parseStmt body in
+                let () = (Tac.Label continue) #: instrs in
+                let () = begin match post_opt with
+                    | None -> ()
+                    | Some (post, postfix) ->
+                        let _ = parseExpr post in
+                        List.iter (fun stmt -> parseStmt stmt) postfix
+                end in
+                let () = (Tac.Jump begin_lbl) #: instrs in 
+                (Tac.Label break) #: instrs
+
             | Ast.Compound items -> parseBlockItems items
 
+            | Ast.Break lbl -> (Tac.Jump lbl) #: instrs
+            | Ast.Continue lbl -> (Tac.Jump lbl) #: instrs
             | Ast.Null -> ()
             | Ast.Label lbl -> (Tac.Label lbl) #: instrs
             | Ast.Goto lbl -> (Tac.Jump lbl) #: instrs

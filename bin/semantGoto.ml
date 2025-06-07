@@ -20,6 +20,11 @@ let parse (program:Ast.program) =
                     | Some _ ->
                         raise (ParserError ("Duplicate label " ^ lbl))
                 end
+
+                | (Ast.S (Ast.Null)) as h :: rest ->
+                    let (lst, env, l) = scanLabels ~prevIsLabel:prevIsLabel env rest in (*Empty statements are not interesting enough to break the label chain*)
+                    (h::lst, env, l)
+
                 | (Ast.S (Ast.Compound comp_block)) :: rest ->
                     let (newCompound, newEnv, prevIsLabel) = scanLabels ~prevIsLabel:prevIsLabel env comp_block in
                     let (lst, newEnv, l) = scanLabels ~prevIsLabel:prevIsLabel newEnv rest in
@@ -35,36 +40,65 @@ let parse (program:Ast.program) =
                     let (lst, newEnv, l) = scanLabels newEnv rest in
                     ((Ast.S (Ast.If (cond, newThenComp, newElseOpt))) :: lst, newEnv, l)
 
+                | (Ast.S (Ast.While (cond, Ast.Compound body, lbl))) :: rest ->
+                    let (newBody, newEnv, _) = scanLabels env body in
+                    let (lst, newEnv, l) = scanLabels newEnv rest in
+                    ((Ast.S (Ast.While (cond, Ast.Compound newBody, lbl))) :: lst, newEnv, l)
+
+                | (Ast.S (Ast.DoWhile (Ast.Compound body, cond, lbl))) :: rest ->
+                    let (newBody, newEnv, _) = scanLabels env body in
+                    let (lst, newEnv, l) = scanLabels newEnv rest in
+                    ((Ast.S (Ast.While (cond, Ast.Compound newBody, lbl))) :: lst, newEnv, l)
+
+                | (Ast.S (Ast.For (init, cond, post, Ast.Compound body, lbl))) :: rest ->
+                    let (newBody, newEnv, _) = scanLabels env body in
+                    let (lst, newEnv, l) = scanLabels newEnv rest in
+                    ((Ast.S (Ast.For (init, cond, post, Ast.Compound newBody, lbl))) :: lst, newEnv, l)
+
                 | h :: rest -> let (lst, env, l) = scanLabels env rest (*nothing to see*) in
                                (h::lst, env, l)
 
-        in let rec checkGotos env block =
-            match block with
+        in let checkGotos env block =
+            let rec parseBlock block = match block with
                 | [] -> []
-                | (Ast.S (Ast.Goto lbl)) :: rest -> begin match Environment.find_opt lbl env with
-                    | Some newLbl ->
-                        (Ast.S (Ast.Goto newLbl)) :: checkGotos env rest
+                | (Ast.S h) :: t -> let h = parseStatement h in (Ast.S h) :: parseBlock t
+                | h :: t -> h :: (parseBlock t)
+
+            and parseStatement (stmt:Ast.stmt) = match stmt with
+                | Ast.Goto lbl -> begin match Environment.find_opt lbl env with
+                    | Some newLbl -> Ast.Goto newLbl
                     | None ->
                         raise (ParserError ("Goto label " ^ lbl ^ " doesn't exist"))
                 end
 
-                | (Ast.S (Ast.Compound comp_block)) :: rest ->
-                    let new_block = checkGotos env comp_block in
-                    (Ast.S (Ast.Compound new_block)) :: checkGotos env rest
+                | Ast.Compound comp_block -> Ast.Compound (parseBlock comp_block)
 
-                | (Ast.S (Ast.If (cond, Ast.Compound th, el_opt))) :: rest ->
-                    let newThen = checkGotos env th in
-                    let newThenComp = Ast.Compound newThen in
+                | Ast.If (cond, th, el_opt) ->
+                    let newThenComp = parseStatement th in
                     let newElseOpt = begin match el_opt with
-                        | Some (Ast.Compound el) -> let x = checkGotos env el in Some (Ast.Compound x)
+                        | Some el -> Some (parseStatement el)
                         | _ -> el_opt
                     end in
-                    (Ast.S (Ast.If (cond, newThenComp, newElseOpt))) :: checkGotos env rest
+                    Ast.If (cond, newThenComp, newElseOpt)
 
-                | h :: rest -> h :: checkGotos env rest (*nothing to see*)
+                | Ast.While (cond, body, lbl) ->
+                    let newBody = parseStatement body in
+                    Ast.While (cond, newBody, lbl)
+
+                | Ast.DoWhile (body, cond, lbl) ->
+                    let newBody = parseStatement body in
+                    Ast.DoWhile (newBody, cond, lbl)
+
+                | Ast.For (init, cond, post, body, lbl) ->
+                    let newBody = parseStatement body in
+                    Ast.For (init, cond, post, newBody, lbl)
+
+                | stmt -> stmt
+
+            in parseBlock block
 
         in let (newAst, env, _) = scanLabels (Environment.emptySemantGoto) block
-        in let () = Environment.printSemantGoto env
+        (*in let () = Environment.printSemantGoto env*)
         in checkGotos env newAst 
 
     in let parseToplevel = function

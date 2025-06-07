@@ -1,7 +1,8 @@
 
 int main(void) {
-    int x = 10;
-    x++;
-    x - 10 ? 0 : x--;
-    return x;
+    int n = 1;
+    for (int i = 1; i <= 5; i++) {
+        n *= i;
+    }
+    return n;
 }

@@ -17,6 +17,8 @@ let parse tokens =
     in let expect expected = let t = eatToken() in if t <> expected then
                              raise (ParserError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
+    in let dummyLabel = ("?dummyLabelContinue?", "?dummyLabelBreak?")
+
     in let tmpNum = ref 0
     in let newVar id = (let t = id ^ "." ^ (string_of_int (!tmpNum)) in let () = tmpNum := !tmpNum + 1 in t)
 
@@ -31,6 +33,11 @@ let parse tokens =
         let lst = !postfix in
         let () = postfix := [] in
         lst
+
+    in let list_to_stmt = function
+        | [] -> Ast.Null
+        | [stmt] -> stmt
+        | stmts -> Ast.Compound (List.map (fun x -> Ast.S x) stmts)
 
     in let parseOp = function
         | L.PLUS
@@ -101,12 +108,21 @@ let parse tokens =
                items @ parse_block_items env' lvl
 
     and parse_block_item env lvl = match nextToken() with
-        | L.INT32 -> let (items, env') = parse_decl env lvl in
-                     ((List.map (fun x -> Ast.D x) (items)) @
-                     (List.map (fun x -> Ast.S x) (flushPostfix())),
-                        env')
+        | L.INT32 -> let (item, env') = parse_decl env lvl in
+                     (Ast.D item :: (List.map (fun x -> Ast.S x) (flushPostfix())), env')
 
         | _ -> try (List.map (fun x -> Ast.S x) (parse_stmt env lvl), env)
+        with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
+
+    and parse_for_init env lvl = match nextToken() with
+        | L.SEMICOLON -> let _ = eatToken() in None, env
+        | L.INT32 -> let (item, env') = parse_decl env lvl in
+                     (Some (Ast.InitDecl (item, flushPostfix())), env')
+
+        | _ -> try (
+            let r = parse_expr env lvl in
+            let r = Some (Ast.InitExpr (r, flushPostfix())) in let () = expect L.SEMICOLON in r, env
+        )
         with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
 
     and parse_decl env lvl =
@@ -124,7 +140,7 @@ let parse tokens =
             | _ -> None
 
         in let () = expect L.SEMICOLON
-        in [Ast.Declaration (newId, expr)], newEnv
+        in (Ast.Declaration (newId, expr), newEnv)
 
     and parse_stmt env lvl =
         let result = match nextToken() with
@@ -136,21 +152,60 @@ let parse tokens =
             let cond = parse_expr env lvl in
             let () = expect L.RPAREN in
             let postfixAfterCond = flushPostfix() in
-            let true_branch = Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl)) in
+            let true_branch = (parse_stmt env lvl) |> list_to_stmt  in
             let else_branch =
                 if nextToken() = L.ELSE then
                     let _ = eatToken() in
-                    Some (Ast.Compound (List.map (fun x -> Ast.S x)(postfixAfterCond @ parse_stmt env lvl)))
+                    Some ((parse_stmt env lvl) |> list_to_stmt)
                 else None
-            in [Ast.If (cond, true_branch, else_branch)]
+            in [Ast.If ((cond, postfixAfterCond), true_branch, else_branch)]
+
+        | L.WHILE ->
+            let _ = eatToken() in
+            let () = expect L.LPAREN in
+            let cond = parse_expr env lvl in
+            let () = expect L.RPAREN in
+            let postfixAfterCond = flushPostfix() in
+            let body = (parse_stmt env lvl) |> list_to_stmt
+            in [Ast.While ((cond, postfixAfterCond), body, dummyLabel)]
+
+        | L.DO ->
+            let _ = eatToken() in
+            let body = (parse_stmt env lvl) |> list_to_stmt in
+            let () = expect L.WHILE in
+            let () = expect L.LPAREN in
+            let cond = parse_expr env lvl in
+            let () = expect L.RPAREN in
+            let () = expect L.SEMICOLON in
+            let postfixAfterCond = flushPostfix()
+            in [Ast.DoWhile (body, (cond, postfixAfterCond), dummyLabel)]
+
+        | L.FOR ->
+            let _ = eatToken() in
+            let () = expect L.LPAREN in
+            let (init, newEnv) = parse_for_init env (lvl+1) in
+            let cond = begin match nextToken() with
+                | L.SEMICOLON -> let _ = eatToken() in None
+                | _ -> let r = parse_expr newEnv (lvl+1) in let () = expect L.SEMICOLON in
+                       let postfixAfterCond = flushPostfix() in Some (r, postfixAfterCond)
+            end in
+            let post = begin match nextToken() with
+                | L.RPAREN -> let _ = eatToken() in None
+                | _ -> let r = parse_expr newEnv (lvl+1) in let () = expect L.RPAREN in
+                       let postfixAfterPost =  flushPostfix() in Some (r, postfixAfterPost)
+            end in
+            let body = (parse_stmt newEnv (lvl+1)) |> list_to_stmt
+            in [Ast.For (init, cond, post, body, dummyLabel)]
+
+
         | L.LBRACE -> let _ = eatToken() in [Ast.Compound (parse_block_items env (lvl+1))]
         | L.GOTO -> let _ = eatToken() in let id = expectIdentifier() in let () = expect L.SEMICOLON in [Ast.Goto id]
+        | L.BREAK -> let _ = eatToken() in let _ = expect L.SEMICOLON in [Ast.Break (snd dummyLabel)]
+        | L.CONTINUE -> let _ = eatToken() in let _ = expect L.SEMICOLON in [Ast.Continue (fst dummyLabel)]
+
         (*Label. They are kind of not statements, but no one uses goto so it doesn't deserve its own type.*)
-        (* C23 *)
-        (*| L.ID lbl when nextNextToken() = L.COLON ->*)
-        (*    let _ = eatToken() in let _ = eatToken() in Ast.Label lbl*)
-        (* C17 *)
         | L.ID lbl when nextNextToken() = L.COLON ->
+(* C23 *)(* let _ = eatToken() in let _ = eatToken() in [Ast.Label lbl] *)
             let _ = eatToken() in let _ = eatToken() in (Ast.Label lbl) :: (parse_stmt env lvl)
 
 
@@ -207,7 +262,7 @@ let parse tokens =
         | _ -> try parse_postfix env lvl
                with ParserError e -> raise (ParserError ("Expected unary\n"^e))
 
-    and parse_expr ?(min_prec=0) env lvl =
+    and parse_expr ?(min_prec=0) env lvl : (Ast.expr) =
         let left = parse_unary env lvl in
         let peek = nextToken() in
         let rec iter peekToken left = let p = prec(peekToken) in
@@ -227,13 +282,13 @@ let parse tokens =
                     let () = expect L.COLON in
                     let el = Ast.Unary(Ast.Rvalue, parse_expr ~min_prec:p env lvl) in
                     let postfix = flushPostfix() in
-                    iter (nextToken()) (Ast.Ternary (left, th, el, postfix))
+                    iter (nextToken()) (Ast.Ternary ((left, postfix), th, el))
 
                 else if hasSequencePoint p then
                     let op = eatToken() |> parseOpSp in
                     let between = flushPostfix() in
                     let right = parse_expr ~min_prec:(p+1) env lvl in
-                    iter (nextToken()) (Ast.BinarySp (op, left, right, between))
+                    iter (nextToken()) (Ast.BinarySp (op, (left, between), right))
 
                 else
                     let op = eatToken() |> parseOp in
@@ -257,6 +312,7 @@ let parse tokens =
         let () = expect EOF in
         result
 
-    in try parse_program() |> SemantGoto.parse with
+    in try parse_program() |> SemantGoto.parse |> SemantBreakContinue.parse with 
         | SemantGoto.ParserError e -> raise (ParserError e)
+        | SemantBreakContinue.ParserError e -> raise (ParserError e)
 
