@@ -62,6 +62,15 @@ let tackify ast =
         in let () = List.iter (fun x -> parseStmt x) postfix
         in walkExpr cond
 
+    and parseCases cond cases = match cases with
+        | [] -> ()
+        | (i32, lbl) :: t ->
+            let dst = Tac.Var (newLbl()) in
+            let () = (Tac.Binary (Tac.Equal, cond, Tac.Constant i32, dst)) #: instrs in
+            let () = (Tac.JumpIfNotZero (dst, lbl)) #: instrs in
+            parseCases cond t
+
+
     and parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
@@ -183,6 +192,14 @@ let tackify ast =
                 let () = parseStmt el in
                 (Tac.Label end_lbl) #: instrs
 
+            | Ast.Switch ((cond, postfix), cases, stmt, break, default) ->
+                let newCond = helpParseConditionWithPostfix postfix cond in
+                let cond = parseExpr newCond in
+                let () = parseCases cond cases in
+                let () = (Tac.Jump default) #: instrs in
+                let () = parseStmt stmt in
+                (Tac.Label break) #: instrs
+
             | Ast.DoWhile (body, (cond, postfix), (continue, break)) ->
                 let begin_lbl = newLbl() in
                 let () = (Tac.Label begin_lbl) #: instrs in
@@ -236,6 +253,8 @@ let tackify ast =
 
             | Ast.Break lbl -> (Tac.Jump lbl) #: instrs
             | Ast.Continue lbl -> (Tac.Jump lbl) #: instrs
+            | Ast.Case (_, lbl) -> (Tac.Label lbl) #: instrs
+            | Ast.Default lbl -> (Tac.Label lbl) #: instrs
             | Ast.Null -> ()
             | Ast.Label lbl -> (Tac.Label lbl) #: instrs
             | Ast.Goto lbl -> (Tac.Jump lbl) #: instrs

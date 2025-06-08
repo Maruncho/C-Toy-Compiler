@@ -18,13 +18,21 @@ let parse tokens =
                              raise (ParserError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
     in let dummyLabel = ("?dummyLabelContinue?", "?dummyLabelBreak?")
+    in let dummyCase = "?dummyCase?"
 
-    in let tmpNum = ref 0
-    in let newVar id = (let t = id ^ "." ^ (string_of_int (!tmpNum)) in let () = tmpNum := !tmpNum + 1 in t)
+    in let tmpVar = ref 0
+    in let newVar id = (let t = id ^ "." ^ (string_of_int (!tmpVar)) in let () = tmpVar := !tmpVar + 1 in t)
+
+    in let tmpLabel = ref 0
+    in let newLabel() = let t = ".LS" ^ (string_of_int (!tmpLabel)) in let () = tmpLabel := !tmpLabel + 1 in t
 
     in let expectIdentifier() = match eatToken() with
-                    L.ID id -> id
-                    | _ as t -> raise (ParserError ("Expected identifier, but got " ^ (L.string_of_token t)))
+        | L.ID id -> id
+        | _ as t -> raise (ParserError ("Expected identifier, but got " ^ (L.string_of_token t)))
+
+    in let expectConstExpr() = match eatToken() with
+        | L.INT32_LIT i32 -> i32
+        | _ as t -> raise (ParserError ("Expected constant expression, but got " ^ (L.string_of_token t)))
 
     in let postfix : Ast.stmt list ref = ref []
     in let schedulePostfixIncr var = postfix := (Ast.Expression (Ast.Unary (Ast.Increment, var))) :: !postfix
@@ -125,6 +133,56 @@ let parse tokens =
         )
         with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
 
+    and parse_switch_body body =
+        let default = ref None in
+        let rec parseBlock block = match block with
+            | [] -> ([], [])
+            | (Ast.S h) :: t -> 
+                let (cases, item) = parseStmt h in
+                let (cases', items) = parseBlock t in
+                (cases @ cases', (Ast.S item) :: items)
+            | h :: t ->
+                let (cases', items) = parseBlock t in
+                (cases', h :: items)
+
+        and parseStmt stmt = match stmt with
+            | Ast.Compound block ->
+                let (cases, block) = parseBlock block
+                in (cases, Ast.Compound block)
+
+            | Ast.Default _ -> 
+                let lbl = newLabel() in
+                let () = default := Some lbl in ([], Ast.Default lbl)
+            | Ast.Case (i32, _) ->
+                let lbl = newLabel() in
+                ([(i32, lbl)], Ast.Case (i32, lbl))
+
+            | Ast.If (cond, th, Some el) ->
+                let (cases, th) = parseStmt th in
+                let (cases', el) = parseStmt el in
+                (cases @ cases', Ast.If (cond, th, Some el))
+
+            | Ast.If (cond, th, None) ->
+                let (cases, th) = parseStmt th in
+                (cases, Ast.If (cond, th, None))
+
+            | Ast.While (cond, body, lbl) ->
+                let (cases, body) = parseStmt body in
+                (cases, Ast.While (cond, body, lbl))
+
+            | Ast.DoWhile (body, cond, lbl) ->
+                let (cases, body) = parseStmt body in
+                (cases, Ast.DoWhile (body, cond, lbl))
+
+            | Ast.For (init, cond, post, body, lbl) ->
+                let (cases, body) = parseStmt body in
+                (cases, Ast.For (init, cond, post, body, lbl))
+
+            | stmt -> [], stmt
+
+        in let (cases,stmt) = parseStmt body in (cases, stmt, !default)
+
+
     and parse_decl env lvl =
         let _ = eatToken() in
         let id = expectIdentifier() in
@@ -145,7 +203,7 @@ let parse tokens =
     and parse_stmt env lvl =
         let result = match nextToken() with
         | L.RETURN -> let _ = eatToken() in let r = Ast.Return (parse_expr env lvl) in let () = expect L.SEMICOLON in [r]
-            | L.SEMICOLON -> let () = expect L.SEMICOLON in [Ast.Null]
+        | L.SEMICOLON -> let () = expect L.SEMICOLON in [Ast.Null]
         | L.IF ->
             let _ = eatToken() in
             let () = expect L.LPAREN in
@@ -159,6 +217,26 @@ let parse tokens =
                     Some ((parse_stmt env lvl) |> list_to_stmt)
                 else None
             in [Ast.If ((cond, postfixAfterCond), true_branch, else_branch)]
+
+        | L.CASE -> let _ = eatToken() in
+                    let i32 = expectConstExpr() in
+                    let _ = expect L.COLON in
+                    (Ast.Case (i32, dummyCase)) :: parse_stmt env lvl (*C17 labelled statements*)
+        | L.DEFAULT -> let _ = eatToken() in let _ = expect L.COLON in
+                (Ast.Default dummyCase) :: parse_stmt env lvl (*C17 labelled statements*)
+        | L.SWITCH ->
+            let _ = eatToken() in
+            let () = expect L.LPAREN in
+            let cond = parse_expr env lvl in
+            let () = expect L.RPAREN in
+            let postfixAfterCond = flushPostfix() in
+            let stmt = list_to_stmt (parse_stmt env lvl) in
+            let (cases, body, default_opt) = parse_switch_body stmt in
+            let break = newLabel() in
+            let default = (match default_opt with None -> break | Some d -> d) in
+            [Ast.Switch ((cond, postfixAfterCond), List.rev cases, body, break, default)]
+
+
 
         | L.WHILE ->
             let _ = eatToken() in
@@ -312,7 +390,9 @@ let parse tokens =
         let () = expect EOF in
         result
 
-    in try parse_program() |> SemantGoto.parse |> SemantBreakContinue.parse with 
+    in try let p = parse_program() |> SemantGoto.parse |> SemantBreakContinue.parse
+           in let () = SemantSwitch.parse p in p with
         | SemantGoto.ParserError e -> raise (ParserError e)
         | SemantBreakContinue.ParserError e -> raise (ParserError e)
+        | SemantSwitch.ParserError e -> raise (ParserError e)
 

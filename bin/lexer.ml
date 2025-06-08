@@ -16,6 +16,9 @@ type token =
     | FOR
     | BREAK
     | CONTINUE
+    | SWITCH
+    | CASE
+    | DEFAULT
     | LPAREN
     | RPAREN
     | LBRACE
@@ -72,6 +75,9 @@ let string_of_token = function
     | FOR -> "for"
     | BREAK -> "break"
     | CONTINUE -> "continue"
+    | SWITCH -> "switch"
+    | CASE -> "case"
+    | DEFAULT -> "default"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACE -> "{"
@@ -132,6 +138,9 @@ let token_regexes =
         | "break" -> BREAK
         | "continue" -> CONTINUE
         | "goto" -> GOTO
+        | "switch" -> SWITCH
+        | "case" -> CASE
+        | "default" -> DEFAULT
         | _ -> ID str))
 ;
     (* Integer32 *)

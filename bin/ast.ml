@@ -26,6 +26,8 @@ and block = block_item list
 
 and for_init = InitDecl of decl_sp | InitExpr of expr_sp
 
+and case = Int32.t * identifier (*case <expr>: -> <label> *)
+
 and stmt = Return of expr
          | Expression of expr
          | If of expr_sp * stmt * stmt option
@@ -38,6 +40,8 @@ and stmt = Return of expr
          | Null
          | Label of string
          | Goto of string
+         | Switch of expr_sp * case list * stmt * identifier(*break*) * identifier(*default*)
+         | Case of case | Default of string
 
 and decl = Declaration of identifier * expr option
 
@@ -143,6 +147,8 @@ and print_stmt tabs stmt =
             print_string "}\n"
         | Null -> print_string "<Empty Statement>\n"
         | Label lbl -> print_string ("Label("^lbl^")\n")
+        | Case (i32, lbl) -> print_string ("Case "^(Int32.to_string i32)^":>("^lbl^")\n")
+        | Default lbl -> print_string ("Default("^lbl^")\n")
         | Goto lbl -> print_string ("Goto("^lbl^")\n")
         | Break _ -> print_string ("Break\n")
         | Continue _ -> print_string ("Continue\n")
@@ -167,6 +173,14 @@ and print_stmt tabs stmt =
                            | Some (post, postfix) -> print_expr (tabs+1) post; print_string ",\n";
                                                      print_postfix (tabs+1) postfix);
             print_stmt (tabs+1) body;
+        | Switch ((cond, postfix), cases, body, br, de) ->
+            print_string "Switch(\n";
+            print_expr (tabs+1) cond;print_string ",\n";
+            print_postfix (tabs+1) postfix;
+            print_string (String.make (tabs*2+2) ' ');
+            print_string ("Cases: " ^ List.fold_left (fun acc (x, _) -> acc ^ (Int32.to_string x) ^ ", ") "" cases);
+            if br <> de then print_string "default,\n" else print_string "\n";
+            print_stmt (tabs+1) body
 
 and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');

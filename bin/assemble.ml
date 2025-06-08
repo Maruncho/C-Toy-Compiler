@@ -142,7 +142,13 @@ let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
 let fixUp (Asmt.Program (Asmt.Function (name, instructions))) allocateBytes =
     let rec fixErroneous instrs = match instrs with
         | [] -> []
+
+        (*Remove unnecessary jumps*)
+        | Asmt.Jmp jmp :: (Asmt.Label lbl as l) :: t when jmp = lbl -> l ::(fixErroneous t)
+        | Asmt.JmpCC (_, jmp) :: (Asmt.Label lbl as l) :: t when jmp = lbl -> l :: (fixErroneous t)
+
         | h :: t -> begin match h with
+
             (*Xor-zeroing a mem is slower than a mov 0*)
             | Asmt.Binary (Asmt.Xor, (Asmt.Stack k1 as d), (Asmt.Stack k2))
               when (Int64.compare k1 k2) = 0 ->

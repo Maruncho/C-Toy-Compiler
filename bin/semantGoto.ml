@@ -48,12 +48,17 @@ let parse (program:Ast.program) =
                 | (Ast.S (Ast.DoWhile (Ast.Compound body, cond, lbl))) :: rest ->
                     let (newBody, newEnv, _) = scanLabels env body in
                     let (lst, newEnv, l) = scanLabels newEnv rest in
-                    ((Ast.S (Ast.While (cond, Ast.Compound newBody, lbl))) :: lst, newEnv, l)
+                    ((Ast.S (Ast.DoWhile (Ast.Compound newBody, cond, lbl))) :: lst, newEnv, l)
 
                 | (Ast.S (Ast.For (init, cond, post, Ast.Compound body, lbl))) :: rest ->
                     let (newBody, newEnv, _) = scanLabels env body in
                     let (lst, newEnv, l) = scanLabels newEnv rest in
                     ((Ast.S (Ast.For (init, cond, post, Ast.Compound newBody, lbl))) :: lst, newEnv, l)
+
+                | (Ast.S (Ast.Switch (cond, cases, Ast.Compound body, break, default))) :: rest ->
+                    let (newBody, newEnv, l) = scanLabels env body in
+                    let (lst, newEnv, l) = scanLabels ~prevIsLabel:l newEnv rest in
+                    ((Ast.S (Ast.Switch (cond, cases, Ast.Compound newBody, break, default))) :: lst, newEnv, l)
 
                 | h :: rest -> let (lst, env, l) = scanLabels env rest (*nothing to see*) in
                                (h::lst, env, l)
@@ -92,6 +97,10 @@ let parse (program:Ast.program) =
                 | Ast.For (init, cond, post, body, lbl) ->
                     let newBody = parseStatement body in
                     Ast.For (init, cond, post, newBody, lbl)
+
+                | Ast.Switch (cond, cases, body, break, default) ->
+                    let newBody = parseStatement body in
+                    Ast.Switch (cond, cases, newBody, break, default)
 
                 | stmt -> stmt
 
