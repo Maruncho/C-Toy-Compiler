@@ -43,7 +43,8 @@ let parse (program:Ast.program) =
         | _ :: t -> parseBlock t switch env default
 
     in let parseToplevel = function
-        | Ast.Function (_, body) -> let _ = parseBlock body false (Env32.empty) false in ()
+        | Ast.Function (_, _, Some body) -> let _ = parseBlock body false (Env32.empty) false in ()
+        | _ -> ()
     in
     match program with
-        | Ast.Program toplevel -> parseToplevel toplevel
+        | Ast.Program toplevel -> List.iter (fun x -> parseToplevel x) toplevel

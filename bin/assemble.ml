@@ -50,61 +50,92 @@ let chooseBinop binop src1 src2 dst = match binop with
          Asmt.Cmp (src2, src1);
          Asmt.SetCC (cc, dst)]
 
-let rec parseOperand opr =
-    match opr with
-        | Tac.Constant num -> Asmt.Imm num
-        | Tac.Var id -> Asmt.Pseudo id
-
-and parseInstruction inst =
-    match inst with
-        | Tac.Return d -> [
-            Asmt.Mov (parseOperand d, Asmt.Reg Asmt.RAX);
-            Asmt.Ret]
-        | Tac.Unary (Tac.Not, s ,d) -> parseInstruction (Tac.Binary (Tac.Equal, s, Tac.Constant 0l, d))
-        | Tac.Unary (Tac.Incr, d, _) -> [Asmt.Incr (parseOperand d)]
-        | Tac.Unary (Tac.Decr, d, _) -> [Asmt.Decr (parseOperand d)]
-        | Tac.Unary (unop, s, d) ->
-            let src = parseOperand s in
-            let dst = parseOperand d in
-            let unop = parseUnaryOp unop in
-          [
-            Asmt.Mov (src, dst);
-            Asmt.Unary (unop, dst)]
-        | Tac.Binary (binop, s1, s2, d) ->
-            let src1 = parseOperand s1 in
-            let src2 = parseOperand s2 in
-            let dst = parseOperand d in
-            chooseBinop binop src1 src2 dst
-        | Tac.Copy (s, d) ->
-            let src = parseOperand s in
-            let dst = parseOperand d in
-            [Asmt.Mov (src, dst)]
-        | Tac.Jump lbl ->
-            [Asmt.Jmp lbl]
-        | Tac.JumpIfZero (v, lbl) ->
-            let value = parseOperand v in
-          [
-            Asmt.Cmp (Asmt.Imm 0l, value);
-            Asmt.JmpCC (Asmt.E, lbl)]
-        | Tac.JumpIfNotZero (v, lbl) ->
-            let value = parseOperand v in
-          [
-            Asmt.Cmp (Asmt.Imm 0l, value);
-            Asmt.JmpCC (Asmt.NE, lbl)]
-        | Tac.Label lbl ->
-            [Asmt.Label lbl]
-
-let parseTopLevel tl =
-    match tl with
-        | Tac.Function (name, instructions) -> Asmt.Function (name, 
-            List.fold_left (fun acc inst -> acc @ (parseInstruction inst)) [] instructions)
+let getParamOperand = function
+    | 0 -> Asmt.Reg Asmt.RDI
+    | 1 -> Asmt.Reg Asmt.RSI
+    | 2 -> Asmt.Reg Asmt.RDX
+    | 3 -> Asmt.Reg Asmt.RCX
+    | 4 -> Asmt.Reg Asmt.R8
+    | 5 -> Asmt.Reg Asmt.R9
+    | x when x < 0 -> failwith "Negative index getParamOperand assemble.ml"
+    | x -> Asmt.Stack (Int64.of_int (8*(x-5)+8(*+8 return adress*)))
 
 
-let parseProgram tacky = 
+let parseTopLevel tl tud =
+    let rec parseOperand opr =
+        match opr with
+            | Tac.Constant num -> Asmt.Imm num
+            | Tac.Var id -> Asmt.Pseudo id
+
+    and parseInstruction inst =
+        match inst with
+            | Tac.Return d -> [
+                Asmt.Mov (parseOperand d, Asmt.Reg Asmt.RAX);
+                Asmt.Ret]
+            | Tac.Unary (Tac.Not, s ,d) -> parseInstruction (Tac.Binary (Tac.Equal, s, Tac.Constant 0l, d))
+            | Tac.Unary (Tac.Incr, d, _) -> [Asmt.Incr (parseOperand d)]
+            | Tac.Unary (Tac.Decr, d, _) -> [Asmt.Decr (parseOperand d)]
+            | Tac.Unary (unop, s, d) ->
+                let src = parseOperand s in
+                let dst = parseOperand d in
+                let unop = parseUnaryOp unop in
+              [
+                Asmt.Mov (src, dst);
+                Asmt.Unary (unop, dst)]
+            | Tac.Binary (binop, s1, s2, d) ->
+                let src1 = parseOperand s1 in
+                let src2 = parseOperand s2 in
+                let dst = parseOperand d in
+                chooseBinop binop src1 src2 dst
+            | Tac.Copy (s, d) ->
+                let src = parseOperand s in
+                let dst = parseOperand d in
+                [Asmt.Mov (src, dst)]
+            | Tac.Jump lbl ->
+                [Asmt.Jmp lbl]
+            | Tac.JumpIfZero (v, lbl) ->
+                let value = parseOperand v in
+              [
+                Asmt.Cmp (Asmt.Imm 0l, value);
+                Asmt.JmpCC (Asmt.E, lbl)]
+            | Tac.JumpIfNotZero (v, lbl) ->
+                let value = parseOperand v in
+              [
+                Asmt.Cmp (Asmt.Imm 0l, value);
+                Asmt.JmpCC (Asmt.NE, lbl)]
+            | Tac.Label lbl ->
+                [Asmt.Label lbl]
+            | Tac.Call (name, params, dst) ->
+                let inReg = List.take 6 params in
+                let inStack = List.drop 6 params |> List.rev in
+                let extraPadding = (List.length inStack) mod 2 <> 0 in
+                let deallocSize = Int64.of_int (8 * ((List.length inStack) + if extraPadding then 1 else 0)) in
+
+                let regInstrs =  List.mapi (fun i x -> Asmt.Mov (parseOperand x, getParamOperand i)) inReg in
+                let stackInstrs = List.map (fun x -> let arg = parseOperand x in match arg with
+                    | Asmt.Imm _ | Asmt.Reg _ -> [Asmt.Push arg]
+                    | Asmt.Pseudo _ | Asmt.Stack _ -> [Asmt.Mov (arg, Asmt.Reg Asmt.RAX);
+                                                       Asmt.Push (Asmt.Reg Asmt.RAX)])
+                    inStack |> List.flatten in
+                let stackInstrs = if extraPadding then (Asmt.AllocateStack 8L) :: stackInstrs else stackInstrs in
+             
+                let callInstrs = [Asmt.Call (name);
+                                  Asmt.DeallocateStack deallocSize;
+                                  Asmt.Mov(Asmt.Reg Asmt.RAX, parseOperand dst)] in
+                regInstrs @ stackInstrs @ callInstrs
+
+    in match tl with
+        | Tac.Function (name, params, instructions) ->
+            let () = if not (List.is_empty instructions) then tud := Environment.Env.add name () !tud in
+            let preInstrs = List.mapi (fun i p -> Asmt.Mov(getParamOperand i, Asmt.Pseudo p)) params in
+            Asmt.Function (name,
+                List.fold_left (fun acc inst -> acc @ (parseInstruction inst)) preInstrs instructions)
+
+let parseProgram tacky tud = 
     match tacky with
-        | Tac.Program tl -> Asmt.Program (parseTopLevel tl)
+        | Tac.Program tls -> (List.map (fun tl -> parseTopLevel tl tud) tls)
 
-let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
+let replacePseudos (Asmt.Function (name, instructions)) =
     let offset = ref 0L in
     let dict = ref [] in
     let f operand = match operand with
@@ -114,7 +145,7 @@ let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
                 | Some operand -> operand
                 | None ->
                     let () = offset := Int64.add !offset 4L in
-                    let operand = Asmt.Stack !offset in
+                    let operand = Asmt.Stack (Int64.neg !offset) in
                     let () = dict := ((id, operand) :: !dict) in
                     operand
         end
@@ -132,14 +163,23 @@ let replacePseudos (Asmt.Program (Asmt.Function (name, instructions))) =
         | Asmt.Jmp _
         | Asmt.JmpCC _
         | Asmt.Label _
+        | Asmt.Call _
         | Asmt.Cdq
         | Asmt.AllocateStack _
+        | Asmt.DeallocateStack _
         | Asmt.Ret -> instr
+
+        | Asmt.Push s -> Asmt.Push (f s)
     ) instructions
 
-    in (Asmt.Program (Asmt.Function (name, newInstructions)), !offset)
+    in let roundAlloc offset =
+        let remainder = Int64.rem (Int64.add 0L offset) 16L in
+        let pad = if remainder = 0L then 0L else Int64.sub 16L remainder in
+        Int64.add offset pad
 
-let fixUp (Asmt.Program (Asmt.Function (name, instructions))) allocateBytes =
+    in (Asmt.Function (name, newInstructions), roundAlloc !offset)
+
+let fixUp (Asmt.Function (name, instructions)) allocateBytes =
     let rec fixErroneous instrs = match instrs with
         | [] -> []
 
@@ -195,16 +235,20 @@ let fixUp (Asmt.Program (Asmt.Function (name, instructions))) allocateBytes =
 
             | _ -> h :: (fixErroneous t)
         end
-    in Asmt.Program (Asmt.Function (name,
+    in Asmt.Function (name,
         (Asmt.AllocateStack allocateBytes) :: (fixErroneous instructions)
-    ))
+    )
 
 
 
 
 let assemble tacky =
-    let asmt = parseProgram tacky in
-    let (asmt, stackOffset) = replacePseudos asmt in
-    let asmt = fixUp asmt stackOffset in
-    asmt
+    let tud = ref Environment.Env.empty in
+    let asmt = parseProgram tacky tud in
+    List.map (fun tl ->
+        match tl with
+            | Asmt.Function _ ->
+        let (tl, stackOffset) = replacePseudos tl in
+        fixUp tl stackOffset
+    ) asmt, !tud
 

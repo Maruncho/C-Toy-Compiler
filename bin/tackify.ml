@@ -41,14 +41,14 @@ let tackify ast =
 
     in let rec helpParseConditionWithPostfix postfix cond =
         let oldToNewTemps = List.fold_left (fun lst stmt -> (match stmt with
-            | Ast.Expression (Ast.Unary (Ast.Increment, Ast.Var old)) -> (old, newTemp()) :: lst
-            | Ast.Expression (Ast.Unary (Ast.Decrement, Ast.Var old)) -> (old, newTemp()) :: lst
+            | Ast.Expression (Ast.Unary (Ast.Increment, Ast.Var (old, _))) -> (old, newTemp()) :: lst
+            | Ast.Expression (Ast.Unary (Ast.Decrement, Ast.Var (old, _))) -> (old, newTemp()) :: lst
             | _ -> lst
         )) [] postfix
         in let rec walkExpr expr = match expr with
-            | Ast.Var old -> begin match List.assoc_opt old oldToNewTemps with
-                | None -> Ast.Var old
-                | Some neww -> Ast.Var neww
+            | Ast.Var (old, t) -> begin match List.assoc_opt old oldToNewTemps with
+                | None -> Ast.Var (old, t)
+                | Some neww -> Ast.Var (neww, t)
             end
             | Ast.Unary (op, expr) -> Ast.Unary (op, walkExpr expr)
             | Ast.Binary (op, expr1, expr2) -> Ast.Binary (op, walkExpr expr1, walkExpr expr2)
@@ -74,7 +74,8 @@ let tackify ast =
     and parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
-            | Ast.Var id -> Tac.Var id
+            | Ast.Var (id, Ast.Variable) -> Tac.Var id
+            | Ast.Var (_, _) -> failwith "No support for function variables"
 
             | Ast.Unary (Ast.Increment, dst) ->
                 let dst = parseExpr dst in
@@ -143,7 +144,7 @@ let tackify ast =
                 dst
 
             | Ast.Assignment (left, right) ->
-                let dst = Tac.Var (match left with Ast.Var v -> v | _ -> failwith "lvalue of Assignment is not a Ast.Var") in
+                let dst = Tac.Var (match left with Ast.Var (v, Ast.Variable) -> v | _ -> failwith "lvalue of Assignment is not a Ast.Var") in
                 let src = parseExpr right in
                 let () = (Tac.Copy (src, dst)) #: instrs in
                 dst
@@ -164,6 +165,12 @@ let tackify ast =
                 let () = (Tac.Copy (el, result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
+
+            | Ast.Call (name, args) ->
+                let args = List.map (fun arg -> parseExpr arg) args in
+                let dst = Tac.Var(newTemp()) in
+                let () = (Tac.Call (name, args, dst)) #: instrs in
+                dst
 
 
     and parseStmt stmt =
@@ -226,7 +233,7 @@ let tackify ast =
                         let _ = parseExpr init in
                         List.iter (fun stmt -> parseStmt stmt) postfix
                     | Some Ast.InitDecl (init, postfix) ->
-                        let () = parseDecl init in
+                        let () = parseDecl (Ast.VarDecl init) in
                         List.iter (fun stmt -> parseStmt stmt) postfix
                 end in
                 let begin_lbl = newLbl() in
@@ -261,22 +268,32 @@ let tackify ast =
 
     and parseDecl decl =
         match decl with
-            | Ast.Declaration (_, None) -> ()
-            | Ast.Declaration (id, Some expr) ->
+            | Ast.VarDecl (_, None) -> ()
+            | Ast.VarDecl (id, Some expr) ->
                 let src = parseExpr expr in
                 (Tac.Copy (src, Tac.Var(id))) #: instrs
+            | Ast.FunDecl _ -> ()
 
     and parseBlockItems block_items = match block_items with
         | [] -> ()
         | (Ast.S stmt) :: rest -> parseStmt stmt; parseBlockItems rest
         | (Ast.D decl) :: rest -> parseDecl decl; parseBlockItems rest
 
-    in let parseTopLevel tl = match tl with
-            | Ast.Function (name, block_items) ->
-                let () = parseBlockItems block_items in
+    in let rec parseTopLevel tls = match tls with
+        | [] -> []
+        | tl :: rest -> begin match tl with
+            | Ast.Function (name, params, block_items) ->
+                let has_body = begin match block_items with
+                    | None -> false (*no body, no definition, no assembly*)
+                    | Some items -> let () = parseBlockItems items in true
+                end in
+                if not has_body then parseTopLevel rest else
                 let () = (Tac.Return (Tac.Constant 0l)) #: instrs in
-                Tac.Function (name, List.rev !instrs)
+                let lEXECUTE_LHS_FIRST = Tac.Function (name, params, List.rev !instrs) in
+                let () = instrs := []
+                in lEXECUTE_LHS_FIRST :: (parseTopLevel rest)
+        end
 
     in match ast with
-        | Ast.Program tl -> Tac.Program (parseTopLevel tl)
+        | Ast.Program tls -> Tac.Program (parseTopLevel tls)
 

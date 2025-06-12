@@ -17,10 +17,11 @@ type instruction = Return of operand
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
+                 | Call of identifier * operand list * operand
 
-type toplevel = Function of string * instruction list
+type toplevel = Function of string * identifier list * instruction list
 
-type program = Program of toplevel
+type program = Program of toplevel list
 
 let unary_op_str = function
     | Complement -> "NOT"
@@ -63,18 +64,18 @@ let instruction_str inst =
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
         | Label lbl -> "Label("^lbl^")\n"
+        | Call (name, params, dst) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
 
 let toplevel_str tl =
     match tl with
-        | Function (name, instructions) ->
-            name ^ ":\n" ^
+        | Function (name, params, instructions) ->
+            name ^ "("^(String.concat ", " params)^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
 
 
 
-let string_of_tacky tacky = 
+let string_of_tacky tacky =
     match tacky with
-        | Program tl ->
-            toplevel_str tl ^
-            "\n"
+        | Program tls ->
+            List.fold_left (fun acc x -> acc ^ (toplevel_str x) ^ "\n") "" tls
 

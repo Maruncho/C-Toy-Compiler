@@ -1,6 +1,7 @@
 
 type identifier = string
 
+type var_type = Variable | Function of int
 
 type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
 type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
@@ -9,13 +10,14 @@ type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift 
 type binary_op_sp = LogAnd | LogOr | Comma
 
 type expr = Int32 of Int32.t
-          | Var of identifier
+          | Var of identifier * var_type
           | Unary of unary_op * expr
           | Binary of binary_op * expr * expr
           | BinarySp of binary_op_sp * expr_sp * expr
           | BinaryAssign of binary_op * expr * expr
           | Assignment of expr * expr
           | Ternary of expr_sp * expr * expr
+          | Call of identifier * expr list
 
 and postfix = stmt list
 and expr_sp = expr * postfix
@@ -24,7 +26,7 @@ and decl_sp = decl * postfix
 and block_item = S of stmt | D of decl
 and block = block_item list
 
-and for_init = InitDecl of decl_sp | InitExpr of expr_sp
+and for_init = InitDecl of var_decl_sp | InitExpr of expr_sp
 
 and case = Int32.t * identifier (*case <expr>: -> <label> *)
 
@@ -43,11 +45,17 @@ and stmt = Return of expr
          | Switch of expr_sp * case list * stmt * identifier(*break*) * identifier(*default*)
          | Case of case | Default of string
 
-and decl = Declaration of identifier * expr option
+and var_decl = identifier * expr option
+and var_decl_sp = var_decl * postfix
 
-type toplevel = Function of string * block
+and fun_decl = identifier * identifier list * block option
 
-type program = Program of toplevel
+and decl = VarDecl of var_decl
+         | FunDecl of fun_decl
+
+type toplevel = Function of fun_decl
+
+type program = Program of toplevel list
 
 let string_unary_op = function
     | Complement -> "~"
@@ -87,7 +95,7 @@ let rec print_expr tabs expr =
     match expr with
         | Int32 num -> print_string ("Int32(" ^ (Int32.to_string num) ^ ")")
 
-        | Var id -> print_string ("Var("^id^")")
+        | Var (id, _) -> print_string ("Var("^id^")")
 
         | Unary (op, expr) -> print_string ("Unary(" ^ string_unary_op op ^ ",\n");
                               print_expr (tabs+1) expr;
@@ -122,6 +130,12 @@ let rec print_expr tabs expr =
             print_expr (tabs+1) th; print_string ",\n";
             print_expr (tabs+1) el;
             print_string (")")
+
+        | Call (name, args) ->
+            print_string ("Call("^name^",\n");
+            List.iter (fun x -> print_expr (tabs+1) x; print_string "\n") args;
+            print_string (")")
+
 
 
 and print_stmt tabs stmt =
@@ -185,14 +199,25 @@ and print_stmt tabs stmt =
 and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');
     match decl with
-        Declaration (id, expr_opt) ->
-            print_string ("Decl("^id);
+        | VarDecl (id, expr_opt) ->
+            print_string ("VarDecl("^id);
             begin match expr_opt with
                 | None -> print_string ")\n"
                 | Some e -> print_string ",\n";
                             print_expr (tabs+1) e;
                             print_string ")\n"
             end
+        | FunDecl (id, params, body) ->
+            print_string ("<fn "^id^">(");
+            List.iter (fun x -> print_string (", "^x)) params;
+            match body with
+                | None -> print_string ")\n"
+                | Some body ->
+                    print_string ") {\n";
+                    List.iter (fun x -> print_block_item (tabs+2) x) body;
+                    print_string (String.make (tabs*2) ' ');
+                    print_string "}\n"
+
 
 and print_block_item tabs b = 
     match b with
@@ -210,7 +235,7 @@ and print_postfix tabs postfix =
 and print_for_init tabs i =
     match i with
         | InitDecl (decl, postfix) ->
-            print_decl tabs decl;
+            print_decl tabs (VarDecl decl);
             print_postfix tabs postfix
         | InitExpr (expr, postfix) -> 
             print_expr tabs expr; print_newline();
@@ -219,17 +244,13 @@ and print_for_init tabs i =
 let print_top_level ?(tabs=1) tl =
     print_string (String.make (tabs*2) ' ');
     match tl with
-        | Function (name, block_items) ->
-            print_string ("fn<" ^ name ^ ">{\n");
-            List.iter (fun x -> print_block_item (tabs+1) x) block_items;
-            print_string (String.make (tabs*2) ' ');
-            print_string "}\n"
+        | Function funDecl -> print_decl tabs (FunDecl funDecl)
 
 
 let printProgram ast = 
     match ast with
         | Program tl ->
             print_string "Program(\n";
-            print_top_level tl;
+            List.iter (fun x -> print_top_level x) tl;
             print_string ")\n"
 

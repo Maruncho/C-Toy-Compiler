@@ -3,6 +3,8 @@ module L = Lexer
 
 exception ParserError of string
 
+let globalEnv = ref Environment.empty
+
 let parse tokens =
     let tokens = ref tokens
     in let nextToken() = match !tokens with
@@ -109,6 +111,10 @@ let parse tokens =
         | L.ASTERISK | L.SLASH | L.PERCENT -> 13
         | _ -> -1
 
+    in let isDecl = function
+        | L.INT32 -> true
+        | _ -> false
+
     in let rec parse_block_items env lvl = match nextToken() with
         | L.EOF -> raise (ParserError "Unmatched left brace")
         | L.RBRACE -> let _ = eatToken() in []
@@ -116,16 +122,18 @@ let parse tokens =
                items @ parse_block_items env' lvl
 
     and parse_block_item env lvl = match nextToken() with
-        | L.INT32 -> let (item, env') = parse_decl env lvl in
-                     (Ast.D item :: (List.map (fun x -> Ast.S x) (flushPostfix())), env')
+        | t when isDecl t ->
+            let (item, env') = parse_decl env lvl in
+            (Ast.D item :: (List.map (fun x -> Ast.S x) (flushPostfix())), env')
 
         | _ -> try (List.map (fun x -> Ast.S x) (parse_stmt env lvl), env)
         with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
 
     and parse_for_init env lvl = match nextToken() with
         | L.SEMICOLON -> let _ = eatToken() in None, env
-        | L.INT32 -> let (item, env') = parse_decl env lvl in
-                     (Some (Ast.InitDecl (item, flushPostfix())), env')
+        | t when isDecl t ->
+            let [@warning "-8"] (Ast.VarDecl item, env') = parse_var_decl env lvl in (*suppress FunDecl unmatched warning*)
+            (Some (Ast.InitDecl (item, flushPostfix())), env')
 
         | _ -> try (
             let r = parse_expr env lvl in
@@ -182,23 +190,119 @@ let parse tokens =
 
         in let (cases,stmt) = parseStmt body in (cases, stmt, !default)
 
+    and parse_params env lvl =
+        let rec inner params env = match nextToken() with
+            | x when isDecl x ->
+                let _ = eatToken() in
+                let id = expectIdentifier() in
 
-    and parse_decl env lvl =
-        let _ = eatToken() in
-        let id = expectIdentifier() in
+                if Environment.isInScope id lvl env then raise (ParserError (id ^ " is already a parameter"))
+                else
+
+                let newId = newVar id in
+                let newEnv = Environment.add id (Environment.Var newId, lvl) env in
+
+                if nextToken() = L.COMMA
+                then let _ = eatToken() in inner (newId :: params) newEnv
+                else (List.rev (newId :: params), newEnv)
+            | t -> raise (ParserError ("Expected parameter, but got " ^ (L.string_of_token t)))
+        in
+        match nextToken() with
+            | L.VOID -> let _ = eatToken() in ([], env)
+            | _ -> inner [] env
+
+    and parse_var_decl ?(identifier=None) env lvl =
+        let id = match identifier with
+        | None ->
+            let _ = eatToken() in expectIdentifier()
+        | Some (id) -> id in
 
         if Environment.isInScope id lvl env then raise (ParserError (id ^ " is already in scope"))
         else
 
         let newId = newVar id in
-        let newEnv = Environment.add id (newId, lvl) env in
+        let newEnv = Environment.add id (Environment.Var newId, lvl) env in
 
         let expr = match nextToken() with
             | L.ASSIGN -> let _ = eatToken() in Some (parse_expr newEnv lvl)
             | _ -> None
 
         in let () = expect L.SEMICOLON
-        in (Ast.Declaration (newId, expr), newEnv)
+        in (Ast.VarDecl (newId, expr), newEnv)
+
+    and parse_fun_decl ?(identifier=None) ?(only_decl=true) env lvl =
+        let id = match identifier with
+        | None ->
+            let _ = eatToken() in expectIdentifier()
+        | Some id -> id in
+
+        (* Parse parameters *)
+        let tempEnv = Environment.add id
+            ((Environment.Func (id, 69, false)),
+             lvl)
+            env in
+
+        let () = expect L.LPAREN in
+        let (params, paramsEnv) = parse_params tempEnv (lvl+1) in
+        let () = expect L.RPAREN in
+        (*-------------------*)
+
+        (* Parse body*)
+        let bodyEnv = match Option.get (Environment.find_opt id paramsEnv) with
+            | (Environment.Func _, _) -> 
+                Environment.add id
+                ((Environment.Func (id, List.length params, true(*doesn't matter. Definition are not allowed in body.*))),
+                 lvl)
+                paramsEnv
+            | _ -> paramsEnv (* A parameter shadowed the function declaration *)
+
+        in let body = match nextToken() with
+            | L.LBRACE -> 
+                if only_decl then raise (ParserError ("Function definition not allowed here."));
+                let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1))
+            | _ -> let () = expect L.SEMICOLON in None
+        in
+        (*-----------------------*)
+
+        (* check the declaration locally*)
+        let () = match Environment.find_opt id env with
+            | None -> ()
+            | Some (old, oldLvl) -> begin match old with
+                | Environment.Var _ ->
+                    if lvl = oldLvl then raise (ParserError (id ^ " is already in scope"))
+                | Environment.Func _ -> () (*locally nothing to check*)
+            end in
+        (*--------------------------------*)
+
+        (* check the declaration globally*)
+        let hasBodyUltimately = match Environment.find_opt id !globalEnv with
+            | None -> Option.is_some body
+            | Some (old, _) -> begin match old with
+                | Environment.Var _ ->
+                    raise (ParserError ("Identifier " ^ id ^ "is already a global variable"))
+                | Environment.Func (_, oldParamsCount, hasBody) ->
+                    if Option.is_some body && hasBody then raise (ParserError ("Re-definition of " ^ id ^ " is not allowed")) else
+                    if oldParamsCount <> List.length params then raise (ParserError ("Inconsistent declarations of " ^ id)) else
+                    hasBody || (Option.is_some body)
+            end in
+        (*--------------------------------*)
+
+        let item = ((Environment.Func (id, List.length params, hasBodyUltimately)), lvl) in
+
+        let newEnv = Environment.add id item env in
+        let () = globalEnv := Environment.add id item !globalEnv
+
+        (*define the name globally*)
+        in (Ast.FunDecl (id, params, body), newEnv)
+
+    and parse_decl env lvl = 
+        let _ = eatToken() in
+        let id = expectIdentifier() in
+
+        match nextToken() with
+            | L.LPAREN -> parse_fun_decl ~identifier:(Some id) env lvl
+            | _ -> parse_var_decl ~identifier:(Some id) env lvl
+
 
     and parse_stmt env lvl =
         let result = match nextToken() with
@@ -235,8 +339,6 @@ let parse tokens =
             let break = newLabel() in
             let default = (match default_opt with None -> break | Some d -> d) in
             [Ast.Switch ((cond, postfixAfterCond), List.rev cases, body, break, default)]
-
-
 
         | L.WHILE ->
             let _ = eatToken() in
@@ -286,10 +388,24 @@ let parse tokens =
 (* C23 *)(* let _ = eatToken() in let _ = eatToken() in [Ast.Label lbl] *)
             let _ = eatToken() in let _ = eatToken() in (Ast.Label lbl) :: (parse_stmt env lvl)
 
-
         | _ -> try let r = Ast.Expression (parse_expr env lvl) in let () = expect L.SEMICOLON in [r]
             with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))
         in result @ flushPostfix()
+
+    and parse_args env lvl count =
+        let original = string_of_int count in
+        let rec iter count no_comma = match nextToken() with
+            | L.RPAREN when no_comma ->
+                if count > 0 then raise (ParserError ("Argument count is more than " ^ original))
+                else let _ = eatToken() in []
+            | _ ->
+                if count <= 0 then raise (ParserError ("Argument count is less than " ^ original)) else
+                let arg = parse_expr env lvl in
+                begin match nextToken() with
+                    | L.COMMA -> let _ = eatToken() in arg :: (iter (count-1) false)
+                    | _ -> arg :: (iter (count-1) true)
+                end
+        in iter count true
 
     and parse_primary env lvl =
         let t = eatToken() in
@@ -301,7 +417,10 @@ let parse tokens =
             | L.ID id -> begin
                 match Environment.find_opt id env with
                     | None -> raise (ParserError (id ^ " is not declared."))
-                    | Some (realId, _) -> Ast.Var realId
+                    | Some (decl, _) -> begin match decl with
+                        | Environment.Var realId -> Ast.Var (realId, Ast.Variable)
+                        | Environment.Func (id, paramCount, _) -> Ast.Var (id, Ast.Function paramCount)
+                    end
             end
             | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
 
@@ -309,16 +428,26 @@ let parse tokens =
         let primary = parse_primary env lvl in
         let rec iter peekToken left = match peekToken with
             | L.INCREMENT ->
-                let () = begin match left with Ast.Var _ -> () | _ -> raise (ParserError "Suffix Increment operator rhs is not an lvalue") end in
+                let () = begin match left with Ast.Var (_, Ast.Variable) -> () | _ -> raise (ParserError "Suffix Increment operator rhs is not an lvalue") end in
                 let _ = eatToken() in
                 let () = schedulePostfixIncr left in
                 iter (nextToken()) (Ast.Unary (Ast.Rvalue, left))
             | L.DECREMENT ->
-                let () = begin match left with Ast.Var _ -> () | _ -> raise (ParserError "Suffix Decrement operator rhs is not an lvalue") end in
+                let () = begin match left with Ast.Var (_, Ast.Variable) -> () | _ -> raise (ParserError "Suffix Decrement operator rhs is not an lvalue") end in
                 let _ = eatToken() in
                 let () = schedulePostfixDecr left in
                 iter (nextToken()) (Ast.Unary (Ast.Rvalue, left))
-            | _ -> left
+            | L.LPAREN ->
+                let id, count = begin match left with Ast.Var (id, Ast.Function count) -> id, count | _ -> raise (ParserError "Cannot call a variable.") end in
+                let _ = eatToken() in
+                let args = parse_args env lvl count in
+                iter (nextToken()) (Ast.Call (id, args))
+
+            | _ -> (*functions cannot be an expression past this point*)
+                begin match left with
+                    | Ast.Var (_, Ast.Function _) -> raise (ParserError "Cannot use function as a variable.")
+                    | _ -> left
+                end
 
         in iter (nextToken()) primary
 
@@ -377,16 +506,15 @@ let parse tokens =
                 left
         in iter peek left
 
+    and parse_toplevel env lvl = match nextToken() with
+        | L.EOF -> []
+        | _ -> let [@warning "-8"] (Ast.FunDecl decl, newEnv) = parse_fun_decl ~only_decl:false env lvl in
+               Ast.Function decl :: (parse_toplevel newEnv lvl)
+
     and parse_program() =
         let env = Environment.empty in
-
-        let () = expect INT32 in
-        let () = expect (ID "main") in
-        let () = expect LPAREN in
-        let () = expect VOID in
-        let () = expect RPAREN in
-        let () = expect LBRACE in
-        let result = Ast.Program(Ast.Function ("main", parse_block_items env 1)) in
+        let toplevel = parse_toplevel env 0 in
+        let result = Ast.Program(toplevel) in
         let () = expect EOF in
         result
 

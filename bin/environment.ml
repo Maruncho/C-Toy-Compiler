@@ -1,8 +1,9 @@
 
-(*type decl_type = Var of string*)
-(*               | Type (* for now it's just int *) *)
+type decl_type = Var of string
+               (*| Type (* for now it's just int *) *)
+               | Func of string * int * bool
 
-type data = string * int (* new identifier * scope level *)
+type data = decl_type * int (* new identifier * scope level *)
 
 module Env = Map.Make(struct type t = string let compare = String.compare end)
 
