@@ -49,7 +49,7 @@ let parse (program:Ast.program) =
         | h :: t -> h :: (parseBlock t last)
 
     in let parseToplevel = function
-        | Ast.Function (name, params, Some body) -> Ast.Function (name, params, Some (parseBlock body (None, None)))
+        | Ast.FunDecl (name, params, Some body, storage) -> Ast.FunDecl (name, params, Some (parseBlock body (None, None)), storage)
         | x -> x
     in
     match program with

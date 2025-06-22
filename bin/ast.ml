@@ -1,7 +1,7 @@
 
 type identifier = string
 
-type var_type = Variable | Function of int
+type var_type = AutoVariable | StaticVariable | Function of int
 
 type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
 type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
@@ -45,15 +45,17 @@ and stmt = Return of expr
          | Switch of expr_sp * case list * stmt * identifier(*break*) * identifier(*default*)
          | Case of case | Default of string
 
-and var_decl = identifier * expr option
+and storage_class = Static | Extern
+
+and var_decl = identifier * expr option * storage_class option
 and var_decl_sp = var_decl * postfix
 
-and fun_decl = identifier * identifier list * block option
+and fun_decl = identifier * identifier list * block option * storage_class
 
 and decl = VarDecl of var_decl
          | FunDecl of fun_decl
 
-type toplevel = Function of fun_decl
+type toplevel = decl
 
 type program = Program of toplevel list
 
@@ -88,6 +90,14 @@ let string_binary_op_sp = function
     | LogAnd -> "&&"
     | LogOr -> "||"
     | Comma -> ","
+
+let string_storage_specifier = function
+    | Static -> "static "
+    | Extern -> "extern "
+
+let string_storage_specifier_opt = function
+    | None -> ""
+    | Some x -> string_storage_specifier x
 
 
 let rec print_expr tabs expr =
@@ -199,16 +209,16 @@ and print_stmt tabs stmt =
 and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');
     match decl with
-        | VarDecl (id, expr_opt) ->
-            print_string ("VarDecl("^id);
+        | VarDecl (id, expr_opt, storage) ->
+            print_string ((string_storage_specifier_opt storage)^"VarDecl("^id);
             begin match expr_opt with
                 | None -> print_string ")\n"
                 | Some e -> print_string ",\n";
                             print_expr (tabs+1) e;
                             print_string ")\n"
             end
-        | FunDecl (id, params, body) ->
-            print_string ("<fn "^id^">(");
+        | FunDecl (id, params, body, storage) ->
+            print_string ((string_storage_specifier storage)^"<fn "^id^">(");
             List.iter (fun x -> print_string (", "^x)) params;
             match body with
                 | None -> print_string ")\n"
@@ -241,10 +251,7 @@ and print_for_init tabs i =
             print_expr tabs expr; print_newline();
             print_postfix tabs postfix
 
-let print_top_level ?(tabs=1) tl =
-    print_string (String.make (tabs*2) ' ');
-    match tl with
-        | Function funDecl -> print_decl tabs (FunDecl funDecl)
+let print_top_level ?(tabs=1) = print_decl tabs
 
 
 let printProgram ast = 

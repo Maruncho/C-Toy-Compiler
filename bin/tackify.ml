@@ -1,18 +1,9 @@
 
 module Tac = Tacky
 
+exception TackyError of string
 
-let tackify ast = 
-    let ( #: ) (h: 'a) (t: 'a list ref) = t := (h :: (!t)) in
-    let instrs : Tac.instruction list ref = ref [] in
-
-    let tmpNum = ref 0 in
-    let newTemp() = (let t = "tmp." ^ (string_of_int (!tmpNum)) in let () = tmpNum := !tmpNum + 1 in t) in
-
-    let lblNum = ref 0 in
-    let newLbl() = (let t = ".L" ^ (string_of_int (!lblNum)) in let () = lblNum := !lblNum + 1 in t) in
-
-    let parseUnaryOp = function
+let parseUnaryOp = function
         | Ast.Negate -> Tac.Negate
         | Ast.Complement -> Tac.Complement
         | Ast.LogNot -> Tac.Not
@@ -20,7 +11,7 @@ let tackify ast =
         | Ast.Decrement -> Tac.Decr
         | Ast.Rvalue -> failwith "Rvalue is a useless unop and should be just unboxed(tackify.ml)"
 
-    in let parseBinaryOp = function
+let parseBinaryOp = function
         | Ast.Add -> Tac.Add
         | Ast.Sub -> Tac.Subtract
         | Ast.Mul -> Tac.Multiply
@@ -39,7 +30,19 @@ let tackify ast =
         | Ast.Ge -> Tac.GreaterOrEqual
         | Ast.Assign -> failwith "assignment operator is not handled by parseBinary"
 
-    in let rec helpParseConditionWithPostfix postfix cond =
+let tackify ast globalEnv = 
+    let ( #: ) (h: 'a) (t: 'a list ref) = t := (h :: (!t)) in
+    let instrs : Tac.instruction list ref = ref [] in
+    let undefinedNames = ref Environment.setEmpty in
+    let localStatics = ref [] in
+
+    let tmpNum = ref 0 in
+    let newTemp() = (let t = "tmp." ^ (string_of_int (!tmpNum)) in let () = tmpNum := !tmpNum + 1 in t) in
+
+    let lblNum = ref 0 in
+    let newLbl() = (let t = ".L" ^ (string_of_int (!lblNum)) in let () = lblNum := !lblNum + 1 in t) in
+
+    let rec helpParseConditionWithPostfix postfix cond =
         let oldToNewTemps = List.fold_left (fun lst stmt -> (match stmt with
             | Ast.Expression (Ast.Unary (Ast.Increment, Ast.Var (old, _))) -> (old, newTemp()) :: lst
             | Ast.Expression (Ast.Unary (Ast.Decrement, Ast.Var (old, _))) -> (old, newTemp()) :: lst
@@ -70,12 +73,12 @@ let tackify ast =
             let () = (Tac.JumpIfNotZero (dst, lbl)) #: instrs in
             parseCases cond t
 
-
     and parseExpr expr =
         match expr with
             | Ast.Int32 num -> Tac.Constant num
-            | Ast.Var (id, Ast.Variable) -> Tac.Var id
-            | Ast.Var (_, _) -> failwith "No support for function variables"
+            | Ast.Var (id, Ast.AutoVariable) -> Tac.Var id
+            | Ast.Var (id, Ast.StaticVariable) -> Tac.StaticVar id
+            | Ast.Var (_, Ast.Function _) -> failwith "No support for function variables"
 
             | Ast.Unary (Ast.Increment, dst) ->
                 let dst = parseExpr dst in
@@ -144,7 +147,9 @@ let tackify ast =
                 dst
 
             | Ast.Assignment (left, right) ->
-                let dst = Tac.Var (match left with Ast.Var (v, Ast.Variable) -> v | _ -> failwith "lvalue of Assignment is not a Ast.Var") in
+                let dst = (match left with Ast.Var (v, Ast.AutoVariable) -> Tac.Var v
+                                         | Ast.Var (v, Ast.StaticVariable) -> Tac.StaticVar v
+                                         | _ -> failwith "lvalue of Assignment is not a variable") in
                 let src = parseExpr right in
                 let () = (Tac.Copy (src, dst)) #: instrs in
                 dst
@@ -268,11 +273,20 @@ let tackify ast =
 
     and parseDecl decl =
         match decl with
-            | Ast.VarDecl (_, None) -> ()
-            | Ast.VarDecl (id, Some expr) ->
+            | Ast.VarDecl (_, None, None) -> ()
+            | Ast.VarDecl (id, Some expr, None) -> 
                 let src = parseExpr expr in
                 (Tac.Copy (src, Tac.Var(id))) #: instrs
-            | Ast.FunDecl _ -> ()
+
+            | Ast.VarDecl (id, None, Some Ast.Static) ->
+                localStatics := (Tac.StaticVariable (id, false, 0l)) :: !localStatics
+
+            | Ast.VarDecl (id, Some expr , Some Ast.Static) ->
+                let i = Environment.parseConstExpr expr (*(Some globalEnv)*) in
+                let i = match i with Some i -> i | None -> failwith "parseConstExprssion returned None after passing a globalEnv" in
+                localStatics := (Tac.StaticVariable (id, false, i)) :: !localStatics
+
+            | _ -> ()
 
     and parseBlockItems block_items = match block_items with
         | [] -> ()
@@ -282,18 +296,44 @@ let tackify ast =
     in let rec parseTopLevel tls = match tls with
         | [] -> []
         | tl :: rest -> begin match tl with
-            | Ast.Function (name, params, block_items) ->
+            | Ast.FunDecl (name, params, block_items, _) ->
+                let is_global = begin match Environment.find_opt name globalEnv with
+                    | None -> failwith "DEBUG: Function found in AST, but not in globalEnv"
+                    | Some (Environment.VarAttr _) -> failwith "DEBUG: Function found in AST, but var found in globalEnv"
+                    | Some (Environment.FunAttr (_, is_global)) -> is_global
+                end in
                 let has_body = begin match block_items with
                     | None -> false (*no body, no definition, no assembly*)
                     | Some items -> let () = parseBlockItems items in true
                 end in
                 if not has_body then parseTopLevel rest else
                 let () = (Tac.Return (Tac.Constant 0l)) #: instrs in
-                let lEXECUTE_LHS_FIRST = Tac.Function (name, params, List.rev !instrs) in
+                let lEXECUTE_LHS_FIRST = Tac.Function (name, is_global, params, List.rev !instrs) in
                 let () = instrs := []
                 in lEXECUTE_LHS_FIRST :: (parseTopLevel rest)
+
+            | Ast.VarDecl _ -> parseTopLevel rest
         end
 
-    in match ast with
-        | Ast.Program tls -> Tac.Program (parseTopLevel tls)
+    in let parseStaticVarsAndNoticeUndefinedExternFunctions() =
+        Environment.Env.fold (fun _ v acc -> match v with
+        | Environment.VarAttr (id,initial,is_global) ->
+            begin match initial with
+                | Environment.NoInitializer -> let () = undefinedNames := Environment.setAdd id !undefinedNames in acc
+                | Environment.Tentative -> (Tac.StaticVariable (id,is_global,0l)) :: acc
+                | Environment.Initial i -> (Tac.StaticVariable (id,is_global,i)) :: acc
+                | Environment.SecondPass expr ->
+                    let i = Environment.parseConstExpr expr (*(Some globalEnv)*) in
+                    let i = match i with Some i -> i | None -> failwith "parseConstExprssion returned None after passing a globalEnv" in
+                    (Tac.StaticVariable (id, is_global, i)) :: acc
+            end
+        | Environment.FunAttr ((id,_,is_defined),is_global) ->
+            let () = if (not is_defined) && is_global then undefinedNames := Environment.setAdd id !undefinedNames
+            in acc
+    ) globalEnv []
+
+    in try match ast with
+        | Ast.Program tls -> let p = (parseTopLevel tls) @ (parseStaticVarsAndNoticeUndefinedExternFunctions())
+                             in Tac.Program (p @ !localStatics), !undefinedNames
+    with Environment.EnvironmentError e -> raise (TackyError e)
 

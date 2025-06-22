@@ -43,7 +43,7 @@ let parse (program:Ast.program) =
         | _ :: t -> parseBlock t switch env default
 
     in let parseToplevel = function
-        | Ast.Function (_, _, Some body) -> let _ = parseBlock body false (Env32.empty) false in ()
+        | Ast.FunDecl (_, _, Some body, _) -> let _ = parseBlock body false (Env32.empty) false in ()
         | _ -> ()
     in
     match program with

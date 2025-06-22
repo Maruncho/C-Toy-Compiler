@@ -8,6 +8,7 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
 
 type operand = Constant of Int32.t
              | Var of identifier
+             | StaticVar of identifier
 
 type instruction = Return of operand
                  | Unary of unary_op * operand * operand
@@ -19,7 +20,8 @@ type instruction = Return of operand
                  | Label of identifier
                  | Call of identifier * operand list * operand
 
-type toplevel = Function of string * identifier list * instruction list
+type toplevel = Function of string * bool(*global*) * identifier list * instruction list 
+              | StaticVariable of string * bool(*global*) * Int32.t
 
 type program = Program of toplevel list
 
@@ -52,6 +54,7 @@ let operand_str oper =
     match oper with
         | Constant num -> "$" ^ (Int32.to_string num)
         | Var id -> "%" ^ id
+        | StaticVar lbl -> "("^lbl^")"
 
 let instruction_str inst =
     "\t" ^
@@ -68,9 +71,11 @@ let instruction_str inst =
 
 let toplevel_str tl =
     match tl with
-        | Function (name, params, instructions) ->
-            name ^ "("^(String.concat ", " params)^"):\n" ^
+        | Function (name, is_global, params, instructions) ->
+            (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " params)^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
+        | StaticVariable (name, is_global, init) ->
+            (if is_global then "global " else "") ^ "int " ^ name ^ " = " ^ (Int32.to_string init)
 
 
 

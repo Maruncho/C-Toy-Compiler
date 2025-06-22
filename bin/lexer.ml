@@ -19,6 +19,8 @@ type token =
     | SWITCH
     | CASE
     | DEFAULT
+    | STATIC
+    | EXTERN
     | LPAREN
     | RPAREN
     | LBRACE
@@ -79,6 +81,8 @@ let string_of_token = function
     | SWITCH -> "switch"
     | CASE -> "case"
     | DEFAULT -> "default"
+    | STATIC -> "static"
+    | EXTERN -> "extern"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACE -> "{"
@@ -143,6 +147,8 @@ let token_regexes =
         | "switch" -> SWITCH
         | "case" -> CASE
         | "default" -> DEFAULT
+        | "static" -> STATIC
+        | "extern" -> EXTERN
         | _ -> ID str))
 ;
     (* Integer32 *)
