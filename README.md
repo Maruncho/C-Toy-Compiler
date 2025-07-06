@@ -8,6 +8,15 @@ Lexer(lexer.ml) -> Parser(parser.ml) -> Other Semantic Analysis(semant*.ml) -> I
 ## Compiler Driver Pipeline:
 C Source code => Run gcc preprocessor (.c -> .i) => Run this compiler (.i -> .s) => Run gcc assembler and linker (.s -> \<ELF Executable\>)
 
+## How to run:
+1. Install opam and ocaml if you haven't already.
+2. ```
+   git clone https://github.com/Maruncho/C-Toy-Compiler.git # check out the repo
+   cd C-Toy-Compiler
+   opam install . --deps-only # install dependencies through opam
+   dune build [--profile release] # build it
+   ```
+
 ## Usage:
 ./example_driver.sh (.c files)... -o (executable name)
 
