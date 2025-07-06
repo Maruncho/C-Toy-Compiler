@@ -124,6 +124,8 @@ let parse tokens =
 
     in let isTypeSpec = function
         | L.INT
+        | L.UNSIGNED
+        | L.SIGNED
         | L.LONG -> true
         | _ -> false
 
@@ -140,21 +142,37 @@ let parse tokens =
     in let parseLiteral tok = 
         let lit = match tok with
             | L.INT32_LIT lit -> lit
+            | L.UINT32_LIT lit -> lit
             | L.INT64_LIT lit -> lit
+            | L.UINT64_LIT lit -> lit
             | _ -> failwith "Invalid usage of parseLiteral"
-        in if not (Z.fits_int64 lit) then raise (ParserError "Literal is too large to represent in a 64bit integer.")
+        in if not (Z.fits_int64_unsigned lit) then raise (ParserError "Literal is too large to represent in a 64bit integer.")
         else match tok with
             | L.INT32_LIT _ when Z.fits_int32 lit -> (Ast.Int, Ast.Literal (Ast.Int32 (Z.to_int32 lit)))
-            | _ -> (Ast.Long, Ast.Literal (Ast.Int64 (Z.to_int64 lit)))
+            | L.UINT32_LIT _ when Z.fits_int32_unsigned lit -> (Ast.UInt, Ast.Literal (Ast.UInt32 (Z.to_int32_unsigned lit)))
+            | L.INT32_LIT _ | L.INT64_LIT _ -> (Ast.Long, Ast.Literal (Ast.Int64 (Z.to_int64 lit)))
+            | L.UINT32_LIT _ | L.UINT64_LIT _ -> (Ast.ULong, Ast.Literal (Ast.UInt64 (Z.to_int64_unsigned lit)))
+            | _ -> failwith "Invalid usage of parseLiteral"
 
     in let expectConstExpr() = match eatToken() with
         | L.INT32_LIT _ as tok -> parseLiteral tok
+        | L.UINT32_LIT _ as tok -> parseLiteral tok
         | L.INT64_LIT _ as tok -> parseLiteral tok
+        | L.UINT64_LIT _ as tok -> parseLiteral tok
         | _ as t -> raise (ParserError ("Expected constant expression, but got " ^ (L.string_of_token t)))
 
     in let get_common_type t1 t2 =
-        if t1 = t2 then t1
-        else Ast.Long
+        if t1 = t2 then
+            t1
+        else if (Ast.size t1) = (Ast.size t2) then (
+            if (Ast.signed t1) then
+                t2
+            else
+                t1
+        ) else if (Ast.size t1) > (Ast.size t2) then
+            t1
+        else
+            t2
 
     in let convert_to ((old_type, _) as typed_expr) new_type =
         if old_type = new_type then typed_expr
@@ -216,11 +234,15 @@ let parse tokens =
                 let lbl = newLabel() in
                 let num = begin match lit with
                     | Ast.Int32 num -> Const.trunc (Z.of_int32 num) cond_type
+                    | Ast.UInt32 num -> Const.trunc (Z.of_int32_unsigned num) cond_type
                     | Ast.Int64 num -> Const.trunc (Z.of_int64 num) cond_type
+                    | Ast.UInt64 num -> Const.trunc (Z.of_int64_unsigned num) cond_type
                 end in
                 let lit = begin match cond_type with
                     | Ast.Int -> Ast.Int32 (Z.to_int32 num)
+                    | Ast.UInt -> Ast.UInt32 (Z.to_int32_unsigned num)
                     | Ast.Long -> Ast.Int64 (Z.to_int64 num)
+                    | Ast.ULong -> Ast.UInt64 (Z.to_int64_unsigned num)
                 end in
                 ([(lit, lbl)], Ast.Case (lit, lbl))
 
@@ -274,14 +296,26 @@ let parse tokens =
         let rec iter() = match nextToken() with
             | L.INT -> let t = eatToken() in t :: iter()
             | L.LONG -> let t = eatToken() in t :: iter()
+            | L.SIGNED -> let t = eatToken() in t :: iter()
+            | L.UNSIGNED -> let t = eatToken() in t :: iter()
             | _ -> []
-        in match (match list_opt with | None -> iter() | Some lst -> lst) with
-            | [L.INT] -> Ast.Int
-            | [L.LONG]
-            | [L.INT; L.LONG]
-            | [L.LONG; L.INT] -> Ast.Long
-            | [] -> raise (ParserError "No type specifier.")
-            | _ -> raise (ParserError "Invalid type specifier.")
+
+        in let lst = match list_opt with | None -> iter() | Some lst -> lst
+        in if List.is_empty lst then raise (ParserError "No type specifier.") else
+        let _ = List.fold_left (fun seen x -> (
+            if List.mem x seen then raise (ParserError "Invalid type specifier.") else
+            if x = L.SIGNED && List.mem L.UNSIGNED seen then raise (ParserError "Type specifier cannot be both signed and unsigned") else
+            if x = L.UNSIGNED && List.mem L.SIGNED seen then raise (ParserError "Type specifier cannot be both signed and unsigned")
+            else (x::seen)
+
+        )) [] lst in
+        let isUnsigned = List.mem L.UNSIGNED lst in
+        let isLong = List.mem L.LONG lst in
+        match (isUnsigned, isLong) with
+            | (true, true) -> Ast.ULong
+            | (true, false) -> Ast.UInt
+            | (false, true) -> Ast.Long
+            | (false, false) -> Ast.Int
 
 
     and parse_specifiers() =
@@ -495,7 +529,9 @@ let parse tokens =
         let t = eatToken() in
         match t with
             | L.INT32_LIT _ as tok -> parseLiteral tok
+            | L.UINT32_LIT _ as tok -> parseLiteral tok
             | L.INT64_LIT _ as tok -> parseLiteral tok
+            | L.UINT64_LIT _ as tok -> parseLiteral tok
             | L.LPAREN -> let expr = parse_expr env lvl in
                           let () = expect L.RPAREN in
                           expr

@@ -32,11 +32,15 @@ let parseBinaryOp = function
 
 let trunc num typ = match typ with
     | Ast.Long -> Z.signed_extract num 0 64
+    | Ast.ULong -> Z.extract num 0 64
     | Ast.Int -> Z.signed_extract num 0 32
+    | Ast.UInt -> Z.extract num 0 32
 
 let assert_fit num typ = let r, typ_str = match typ with
-    | Ast.Long -> Z.fits_int64 num, "long"
-    | Ast.Int -> Z.fits_int32 num, "int"
+    | Ast.Long -> Z.fits_int64_unsigned num || Z.fits_int64 num, "long"
+    | Ast.ULong -> Z.fits_int64_unsigned num || Z.fits_int64 num, "ulong"
+    | Ast.Int -> Z.fits_int32_unsigned num || Z.fits_int32 num, "int"
+    | Ast.UInt -> Z.fits_int32_unsigned num || Z.fits_int32 num, "uint"
     in if not r then failwith ("DEBUG ASSERT: Number " ^ Z.to_string num ^ " doesn't fit in " ^ typ_str ^ ".")
     else num
 
@@ -44,17 +48,19 @@ let parseConstExpr typed_expr =
     let rec parse (typed_expr:Ast.typed_expr) seen =
         match typed_expr with
             | (_, Ast.Literal lit) -> (match lit with Ast.Int32 num -> Z.of_int32 num
-                                                      | Ast.Int64 num -> Z.of_int64 num)
+                                                    | Ast.UInt32 num -> (Z.of_int32 num |> Z.extract) 0 32
+                                                    | Ast.Int64 num -> Z.of_int64 num
+                                                    | Ast.UInt64 num -> (Z.of_int64 num |> Z.extract) 0 64)
             | (_, Ast.Var _) -> raise (ConstError "Cannot use variables in constant expressions")
 
             | (_, Ast.Cast(new_type, ((old_type, _) as typed_expr))) ->
                 let parsed = parse typed_expr seen in
-                begin match (old_type, new_type) with
-                    | (Ast.Long, Ast.Int) -> trunc parsed Ast.Int
-                    | (Ast.Int, Ast.Long) -> parsed
-                    | (x,y) when x = y -> parsed
-                    | _ -> failwith "Fill in the conversion 'table' in parseConstExpr in Const."
-                end
+                if old_type = new_type then parsed else
+
+                if (Ast.size new_type) = (Ast.size old_type) then
+                    parsed
+                else
+                    trunc parsed new_type
 
             | (_, Ast.Unary (Ast.Rvalue, src)) -> parse src seen
             | (typ, Ast.Unary (op, typed_expr)) ->

@@ -76,13 +76,26 @@ let tackify ast globalEnv =
             let () = (Tac.JumpIfNotZero (dst, lbl)) #: instrs in
             parseCases cond t
 
-    and parseLiteral = function
-        | Ast.Int32 num -> Z.of_int32 num, Tac.Int32
-        | Ast.Int64 num -> Z.of_int64 num, Tac.Int64
+    and parseLiteral : Ast.lit -> Z.t * Tac.typ = function
+        | Ast.Int32 num -> Z.of_int32 num, Tac.Int32 true(*is_signed*)
+        | Ast.Int64 num -> Z.of_int64 num, Tac.Int64 true
+        | Ast.UInt32 num -> Z.of_int32 num, Tac.Int32 false
+        | Ast.UInt64 num -> Z.of_int64 num, Tac.Int64 false
 
-    and parseType : Ast.data_type -> Tac.typ = function
-        | Ast.Int -> Tac.Int32
-        | Ast.Long -> Tac.Int64
+    and parseType = function
+        | Ast.Int -> Tac.Int32 true(*is_signed*)
+        | Ast.Long -> Tac.Int64 true
+        | Ast.UInt -> Tac.Int32 false
+        | Ast.ULong -> Tac.Int64 false
+
+    and flipIsSigned =
+        let flipType = function
+            | Tac.Int32 s -> Tac.Int32 (not s)
+            | Tac.Int64 s -> Tac.Int64 (not s)
+        in function
+            | Tac.Constant (n, t) -> Tac.Constant (n, flipType t)
+            | Tac.Var (n, t) -> Tac.Var (n, flipType t)
+            | Tac.StaticVar (n, t) -> Tac.StaticVar (n, flipType t)
 
     and parseExpr (expr:Ast.typed_expr) =
         match expr with
@@ -93,13 +106,20 @@ let tackify ast globalEnv =
 
             | _, Ast.Cast (new_type, ((inner_type, _) as inner_expr)) ->
                 let result = parseExpr inner_expr in
+                (*let () = print_string((Ast.string_data_type inner_type) ^ " " ^ (Ast.string_data_type new_type) ^ " \n") in*)
                 if inner_type = new_type then result else
-                let dst = Tac.Var (newTemp(), parseType new_type) in
-                let () = begin match new_type with
-                    | Ast.Long -> (Tac.SignExtend (result, dst)) #: instrs
-                    | Ast.Int -> (Tac.Truncate (result, dst)) #: instrs
-                end in
-                dst
+
+                if (Ast.size new_type) = (Ast.size inner_type) then
+                    flipIsSigned result
+                else
+                    let dst = Tac.Var (newTemp(), parseType new_type) in
+                    let () = if (Ast.size new_type) < (Ast.size inner_type) then
+                        ((Tac.Truncate (result, dst)) #: instrs)
+                    else if (Ast.signed inner_type) then
+                        ((Tac.SignExtend (result, dst)) #: instrs)
+                    else
+                        ((Tac.ZeroExtend (result, dst)) #: instrs)
+                    in dst
 
             | _, Ast.Unary (Ast.Increment, dst) ->
                 let dst = parseExpr dst in
@@ -127,11 +147,11 @@ let tackify ast globalEnv =
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfZero (right, false_lbl)) #: instrs in
-                let result = Tac.Var (newTemp(), Tac.Int32) in
-                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32), result)) #: instrs in
+                let result = Tac.Var (newTemp(), Tac.Int32 true) in
+                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32 true), result)) #: instrs in
                 let () = (Tac.Jump end_lbl) #: instrs in
                 let () = (Tac.Label false_lbl) #: instrs in
-                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32), result)) #: instrs in
+                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32 true), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
@@ -143,11 +163,11 @@ let tackify ast globalEnv =
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfNotZero (right, true_lbl)) #: instrs in
-                let result = Tac.Var (newTemp(), Tac.Int32) in
-                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32), result)) #: instrs in
+                let result = Tac.Var (newTemp(), Tac.Int32 true) in
+                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32 true), result)) #: instrs in
                 let () = (Tac.Jump end_lbl) #: instrs in
                 let () = (Tac.Label true_lbl) #: instrs in
-                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32), result)) #: instrs in
+                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32 true), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
@@ -329,7 +349,7 @@ let tackify ast globalEnv =
                     | Some items -> let () = parseBlockItems items in true
                 end in
                 if not has_body then parseTopLevel rest else
-                let () = (Tac.Return (Tac.Constant (Z.zero, Tac.Int64))) #: instrs in
+                let () = (Tac.Return (Tac.Constant (Z.zero, Tac.Int64 true))) #: instrs in
                 let params = List.map (fun (typ, id) -> (id, parseType typ)) params in
                 let lEXECUTE_LHS_FIRST = Tac.Function (name, is_global, params, List.rev !instrs) in
                 let () = instrs := []

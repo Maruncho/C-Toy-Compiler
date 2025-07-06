@@ -7,45 +7,62 @@ let parseUnaryOp = function
     | Tac.Not -> failwith "Tacky Unary Operator is not simple to Asmt."
     | Tac.Incr | Tac.Decr -> failwith "Tacky Increment and Decrement are not handled as a normal unary"
 
-let parseBinaryOp = function
+let parseBinaryOp op signed = match op with
     | Tac.Add -> Asmt.Add
     | Tac.Subtract -> Asmt.Sub
     | Tac.Multiply -> Asmt.Mul
     | Tac.And -> Asmt.And
     | Tac.Or -> Asmt.Or
     | Tac.Xor -> Asmt.Xor
-    | Tac.LShift -> Asmt.Sal
-    | Tac.RShift -> Asmt.Sar
+    | Tac.LShift when signed -> Asmt.Sal
+    | Tac.LShift -> Asmt.Shl
+    | Tac.RShift when signed-> Asmt.Sar
+    | Tac.RShift -> Asmt.Shr
     | _ -> failwith "Tacky Binary Operator is not simple to Asmt."
 
-let parseCondOp = function
+let parseCondOp op signed = match op with
     | Tac.Equal -> Asmt.E
     | Tac.NotEqual -> Asmt.NE
-    | Tac.LessThan -> Asmt.L
-    | Tac.LessOrEqual -> Asmt.LE
-    | Tac.GreaterThan -> Asmt.G
-    | Tac.GreaterOrEqual -> Asmt.GE
+    | Tac.LessThan when signed -> Asmt.L
+    | Tac.LessThan -> Asmt.B
+    | Tac.LessOrEqual when signed -> Asmt.LE
+    | Tac.LessOrEqual -> Asmt.BE
+    | Tac.GreaterThan when signed -> Asmt.G
+    | Tac.GreaterThan -> Asmt.A
+    | Tac.GreaterOrEqual when signed -> Asmt.GE
+    | Tac.GreaterOrEqual -> Asmt.AE
     | _ -> failwith "Incorrect usage of parseCondOp."
 
-let chooseBinop binop src1 src2 dst typ = match binop with
-    | Tac.Divide ->
+let chooseBinop binop src1 src2 dst (typ, signed) = match binop with
+    | Tac.Divide when signed ->
         [Asmt.Mov (typ, src1, Asmt.Reg Asmt.RAX);
          Asmt.SignExtend typ;
          Asmt.Idiv (typ, src2);
          Asmt.Mov (typ, Asmt.Reg Asmt.RAX, dst)]
-    | Tac.Remainder ->
+    | Tac.Divide ->
+        [Asmt.Mov (typ, src1, Asmt.Reg Asmt.RAX);
+         Asmt.Binary (Asmt.QuadWord, Asmt.Xor, Asmt.Reg Asmt.RDX, Asmt.Reg Asmt.RDX);
+         Asmt.Div (typ, src2);
+         Asmt.Mov (typ, Asmt.Reg Asmt.RAX, dst)]
+
+    | Tac.Remainder when signed ->
         [Asmt.Mov (typ, src1, Asmt.Reg Asmt.RAX);
          Asmt.SignExtend typ;
          Asmt.Idiv (typ, src2);
          Asmt.Mov (typ, Asmt.Reg Asmt.RDX, dst)]
+    | Tac.Remainder ->
+        [Asmt.Mov (typ, src1, Asmt.Reg Asmt.RAX);
+         Asmt.Binary (Asmt.QuadWord, Asmt.Xor, Asmt.Reg Asmt.RDX, Asmt.Reg Asmt.RDX);
+         Asmt.Div (typ, src2);
+         Asmt.Mov (typ, Asmt.Reg Asmt.RDX, dst)]
 
     | Tac.Add | Tac.Subtract | Tac.Multiply | Tac.And | Tac.Or | Tac.Xor | Tac.LShift | Tac.RShift ->
-        let binop = parseBinaryOp binop in
+        let binop = parseBinaryOp binop signed in
         [Asmt.Mov (typ, src1, dst);
          Asmt.Binary (typ, binop, src2, dst)]
 
     | Tac.Equal | Tac.NotEqual | Tac.LessThan | Tac.LessOrEqual | Tac.GreaterThan | Tac.GreaterOrEqual ->
-        let cc = parseCondOp binop in
+        let cc = parseCondOp binop signed in
         [Asmt.Binary (Asmt.QuadWord, Asmt.Xor, dst, dst);
          Asmt.Cmp (typ, src2, src1);
          Asmt.SetCC (cc, dst)]
@@ -62,8 +79,8 @@ let getParamOperand = function
 
 let parseType typ =
     match typ with
-        | Tac.Int32 -> Asmt.LongWord
-        | Tac.Int64 -> Asmt.QuadWord
+        | Tac.Int32 s -> Asmt.LongWord, s
+        | Tac.Int64 s -> Asmt.QuadWord, s
 
 let parseOperand opr =
     match opr with
@@ -75,7 +92,7 @@ let parseOperand opr =
 let rec parseInstruction inst =
     match inst with
         | Tac.Return d ->
-            let (typ, d) = parseOperand d in
+            let ((typ,_), d) = parseOperand d in
            [
             Asmt.Mov (typ, d, Asmt.Reg Asmt.RAX);
             Asmt.Ret]
@@ -83,45 +100,52 @@ let rec parseInstruction inst =
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: SRC and DST types mismatch." else
-            [Asmt.Movsx ((s_typ, src), (d_typ, dst))]
+            [Asmt.Movsx ((fst s_typ, src), (fst d_typ, dst))]
+        | Tac.ZeroExtend (s, d) ->
+            let (s_typ, src) = parseOperand s in
+            let (d_typ, dst) = parseOperand d in
+            if s_typ = d_typ then failwith "DEBUG: Assemble: SRC and DST types mismatch." else
+            [Asmt.Movzx ((fst s_typ, src), (fst d_typ, dst))]
         | Tac.Truncate (s, d) ->
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: SRC and DST types mismatch." else
-            [Asmt.Mov (d_typ, src, dst)]
+            [Asmt.Mov (fst d_typ, src, dst)]
         | Tac.Unary (Tac.Not, s ,d) -> parseInstruction (Tac.Binary (Tac.Equal, s, Tac.Constant (Z.zero, Tac.operand_type s), d))
-        | Tac.Unary (Tac.Incr, d, _) -> let (typ, d) = parseOperand d in [Asmt.Incr (typ, d)]
-        | Tac.Unary (Tac.Decr, d, _) -> let (typ, d) = parseOperand d in [Asmt.Decr (typ, d)]
+        | Tac.Unary (Tac.Incr, d, _) -> let (typ, d) = parseOperand d in [Asmt.Incr (fst typ, d)]
+        | Tac.Unary (Tac.Decr, d, _) -> let (typ, d) = parseOperand d in [Asmt.Decr (fst typ, d)]
         | Tac.Unary (unop, s, d) ->
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ <> d_typ then failwith "DEBUG: Assemble: SRC and DST types mismatch." else
             let unop = parseUnaryOp unop in
           [
-            Asmt.Mov (s_typ, src, dst);
-            Asmt.Unary (s_typ, unop, dst)]
+            Asmt.Mov (fst s_typ, src, dst);
+            Asmt.Unary (fst s_typ, unop, dst)]
         | Tac.Binary (binop, s1, s2, d) ->
+            (*let print (typ, signed) = (print_string (Asmt.type_to_string typ ^ " " ^ (if signed then "signed" else "unsigned") ^ "\n")) in *)
             let (s1_typ, src1) = parseOperand s1 in
             let (s2_typ, src2) = parseOperand s2 in
             let (d_typ, dst) = parseOperand d in
+            (*let () = print s1_typ; print s2_typ; print d_typ in*)
             if s1_typ <> s2_typ || s2_typ <> d_typ then failwith "DEBUG: Assemble: SRC1, SRC2 and DST types mismatch." else
             chooseBinop binop src1 src2 dst s1_typ
         | Tac.Copy (s, d) ->
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ <> d_typ then failwith "DEBUG: Assemble: SRC and DST types mismatch." else
-            [Asmt.Mov (s_typ, src, dst)]
+            [Asmt.Mov (fst s_typ, src, dst)]
         | Tac.Jump lbl ->
             [Asmt.Jmp lbl]
         | Tac.JumpIfZero (v, lbl) ->
             let (typ, value) = parseOperand v in
           [
-            Asmt.Cmp (typ, Asmt.Imm Z.zero, value);
+            Asmt.Cmp (fst typ, Asmt.Imm Z.zero, value);
             Asmt.JmpCC (Asmt.E, lbl)]
         | Tac.JumpIfNotZero (v, lbl) ->
             let (typ, value) = parseOperand v in
           [
-            Asmt.Cmp (typ, Asmt.Imm Z.zero, value);
+            Asmt.Cmp (fst typ, Asmt.Imm Z.zero, value);
             Asmt.JmpCC (Asmt.NE, lbl)]
         | Tac.Label lbl ->
             [Asmt.Label lbl]
@@ -132,11 +156,11 @@ let rec parseInstruction inst =
             let deallocSize = Int64.of_int (8 * ((List.length inStack) + if extraPadding then 1 else 0)) in
 
             let regInstrs =  List.mapi (fun i x ->
-                let (typ, x) = parseOperand x in Asmt.Mov (typ, x, getParamOperand i)) inReg in
+                let (typ, x) = parseOperand x in Asmt.Mov (fst typ, x, getParamOperand i)) inReg in
             let stackInstrs = List.map (fun x -> let (typ, arg) = parseOperand x in match arg with
                 | Asmt.Imm _ | Asmt.Reg _ -> [Asmt.Push (Asmt.QuadWord, arg)]
-                | _ when typ = QuadWord -> [Asmt.Push (Asmt.QuadWord, arg)]
-                | Asmt.Pseudo _ | Asmt.Stack _ | Asmt.Data _ -> [Asmt.Mov (typ, arg, Asmt.Reg Asmt.RAX);
+                | _ when (fst typ) = QuadWord -> [Asmt.Push (Asmt.QuadWord, arg)]
+                | Asmt.Pseudo _ | Asmt.Stack _ | Asmt.Data _ -> [Asmt.Mov (fst typ, arg, Asmt.Reg Asmt.RAX);
                                                    Asmt.Push (QuadWord, (Asmt.Reg Asmt.RAX))])
 
                 inStack |> List.flatten in
@@ -145,7 +169,7 @@ let rec parseInstruction inst =
             let (dst_type, dst) = parseOperand dst in
             let callInstrs = [Asmt.Call (name);
                               Asmt.DeallocateStack deallocSize;
-                              Asmt.Mov(dst_type, Asmt.Reg Asmt.RAX, dst)] in
+                              Asmt.Mov(fst dst_type, Asmt.Reg Asmt.RAX, dst)] in
             regInstrs @ stackInstrs @ callInstrs
 
 let parseProgram tacky =
@@ -154,14 +178,14 @@ let parseProgram tacky =
     let bss = ref [] in
     let rec iter tls = match tls with
         | Tac.Function (name, is_global, params, instructions) :: rest ->
-            let preInstrs = List.mapi (fun i (p, typ) -> Asmt.Mov(parseType typ, getParamOperand i, Asmt.Pseudo p)) params in
+            let preInstrs = List.mapi (fun i (p, typ) -> Asmt.Mov(fst (parseType typ), getParamOperand i, Asmt.Pseudo p)) params in
             let fn = (name, List.fold_left (fun acc inst -> acc @ (parseInstruction inst)) preInstrs instructions, is_global) in
             func := fn :: !func; iter rest
         | Tac.StaticVariable (name, is_global, init, typ) :: rest ->
             if Z.equal Z.zero init then
-                (bss := (name, parseType typ, is_global) :: !bss; iter rest)
+                (bss := (name, fst (parseType typ), is_global) :: !bss; iter rest)
             else
-                (data := (name, init, parseType typ, is_global) :: !data; iter rest)
+                (data := (name, init, fst (parseType typ), is_global) :: !data; iter rest)
         | [] -> ()
     in let () = match tacky with
         | Tac.Program tls -> iter tls
@@ -188,9 +212,11 @@ let replacePseudos (name, instructions, is_global) =
         | Asmt.Incr (typ, d)
         | Asmt.Decr (typ, d) -> f d typ acc
         | Asmt.Idiv (typ, s)
+        | Asmt.Div (typ, s)
         | Asmt.Push (typ, s) -> f s typ acc
         | Asmt.SetCC (_, s) -> f s Asmt.Byte acc
         | Asmt.Movsx ((typ_s, s), (typ_d, d)) -> (f s typ_s acc) |> (f d typ_d)
+        | Asmt.Movzx ((typ_s, s), (typ_d, d)) -> (f s typ_s acc) |> (f d typ_d)
 
         | Asmt.Jmp _
         | Asmt.JmpCC _
@@ -227,12 +253,14 @@ let replacePseudos (name, instructions, is_global) =
     in let newInstructions = List.map (fun instr -> match instr with
         | Asmt.Mov (typ, s, d) -> Asmt.Mov (typ, f s typ, f d typ)
         | Asmt.Movsx ((typ_s, s), (typ_d, d)) -> Asmt.Movsx ((typ_s, f s typ_s), (typ_d, f d typ_d))
+        | Asmt.Movzx ((typ_s, s), (typ_d, d)) -> Asmt.Movzx ((typ_s, f s typ_s), (typ_d, f d typ_d))
         | Asmt.Unary (typ, x1, d) -> Asmt.Unary (typ, x1, f d typ)
         | Asmt.Incr (typ, d) -> Asmt.Incr (typ, (f d typ))
         | Asmt.Decr (typ, d) -> Asmt.Decr (typ, (f d typ))
         | Asmt.Binary (typ, x1, s, d) -> Asmt.Binary (typ, x1, f s typ, f d typ)
         | Asmt.Cmp (typ, s, d) -> Asmt.Cmp (typ, f s typ, f d typ)
         | Asmt.Idiv (typ, s) -> Asmt.Idiv (typ, f s typ)
+        | Asmt.Div (typ, s) -> Asmt.Div (typ, f s typ)
         | Asmt.SetCC (x1, s) -> Asmt.SetCC (x1, f s Asmt.Byte)
 
         | Asmt.Jmp _
@@ -281,7 +309,9 @@ let fixUp (name, instructions, is_global) allocateBytes =
 
             (*Shifts are restrictive and c standard is ambiguous*)
             | Asmt.Binary (ty, Asmt.Sal, (Asmt.Imm k), d)
-            | Asmt.Binary (ty, Asmt.Sar, (Asmt.Imm k), d) when
+            | Asmt.Binary (ty, Asmt.Sar, (Asmt.Imm k), d)
+            | Asmt.Binary (ty, Asmt.Shl, (Asmt.Imm k), d)
+            | Asmt.Binary (ty, Asmt.Shr, (Asmt.Imm k), d) when
             (Z.compare k Z.zero) < 0 || (Z.compare k (Z.of_int 31)) > 0 ->
                 let () = Log.warning "shift count >= width of type" in
                 (Asmt.Mov (ty, Asmt.Imm Z.zero, d)) :: (fixErroneous t) (*gcc and clang do this*)
@@ -293,7 +323,13 @@ let fixUp (name, instructions, is_global) allocateBytes =
             | Asmt.Binary (ty, (Asmt.Sal as op), (Asmt.Stack _ as k), d)
             | Asmt.Binary (ty, (Asmt.Sar as op), (Asmt.Stack _ as k), d)
             | Asmt.Binary (ty, (Asmt.Sal as op), (Asmt.Data _ as k), d)
-            | Asmt.Binary (ty, (Asmt.Sar as op), (Asmt.Data _ as k), d) ->
+            | Asmt.Binary (ty, (Asmt.Sar as op), (Asmt.Data _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shl as op), (Asmt.Reg _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shr as op), (Asmt.Reg _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shl as op), (Asmt.Stack _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shr as op), (Asmt.Stack _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shl as op), (Asmt.Data _ as k), d)
+            | Asmt.Binary (ty, (Asmt.Shr as op), (Asmt.Data _ as k), d) ->
                 (*the code emission phase will make %rcx in the 2nd instruction into %cl*)
                 (Asmt.Mov (ty, k, Asmt.Reg Asmt.RCX)) :: (Asmt.Binary (ty, op, Asmt.Reg Asmt.RCX, d)) :: (fixErroneous t)
 
@@ -321,13 +357,19 @@ let fixUp (name, instructions, is_global) allocateBytes =
             | Asmt.Movsx ((ty_src, (Asmt.Imm _ as imm)), (ty_dst, dst)) ->
                 (Asmt.Mov(ty_src, imm, Asmt.Reg Asmt.R10)) :: (Asmt.Movsx ((ty_src, Asmt.Reg Asmt.R10), (ty_dst, dst))) :: (fixErroneous t)
 
+            (* movzx cannot have imm as src *)
+            | Asmt.Movzx ((ty_src, (Asmt.Imm _ as imm)), (ty_dst, dst)) ->
+                (Asmt.Mov(ty_src, imm, Asmt.Reg Asmt.R10)) :: (Asmt.Movzx ((ty_src, Asmt.Reg Asmt.R10), (ty_dst, dst))) :: (fixErroneous t)
+
             (* cmp cannot have an imm d*)
             | Asmt.Cmp (ty, s, (Asmt.Imm _ as d)) ->
                 (Asmt.Mov (ty, d, Asmt.Reg Asmt.R11)) :: (Asmt.Cmp (ty, s, Asmt.Reg Asmt.R11)) :: (fixErroneous t)
 
-            (*Idiv cannot do imm*)
+            (*[I]div cannot do imm*)
             | Asmt.Idiv (ty, (Asmt.Imm _ as imm)) ->
                 (Asmt.Mov (ty, imm, Asmt.Reg Asmt.R10)) :: (Asmt.Idiv (ty, Asmt.Reg Asmt.R10)) :: (fixErroneous t)
+            | Asmt.Div (ty, (Asmt.Imm _ as imm)) ->
+                (Asmt.Mov (ty, imm, Asmt.Reg Asmt.R10)) :: (Asmt.Div (ty, Asmt.Reg Asmt.R10)) :: (fixErroneous t)
 
             | _ -> h :: (fixErroneous t)
         end in
@@ -340,7 +382,19 @@ let fixUp (name, instructions, is_global) allocateBytes =
             | Asmt.Movsx ((ty_src, src), (ty_dst, (Asmt.Data _ as dst))) ->
                 (Asmt.Movsx ((ty_src, src), (ty_dst, (Asmt.Reg Asmt.R11)))) :: (Asmt.Mov (ty_dst, Asmt.Reg Asmt.R11, dst)) :: (fixErroneousAgain t)
 
+            (* movzlq doesn't exist *)
+            | Asmt.Movzx ((Asmt.LongWord, src), (Asmt.QuadWord, (Asmt.Reg _ as dst))) ->
+                (Asmt.Mov (Asmt.LongWord, src, dst)) :: (fixErroneousAgain t)
+            | Asmt.Movzx ((Asmt.LongWord, src), (Asmt.QuadWord, dst)) ->
+                (Asmt.Mov (Asmt.LongWord, src, Asmt.Reg Asmt.R11)) :: (Asmt.Mov (Asmt.QuadWord, Asmt.Reg Asmt.R11, dst)) :: (fixErroneousAgain t)
+
+            (* movzx cannot have mem as dst *)
+            | Asmt.Movzx ((ty_src, src), (ty_dst, (Asmt.Stack _ as dst)))
+            | Asmt.Movzx ((ty_src, src), (ty_dst, (Asmt.Data _ as dst))) ->
+                (Asmt.Movzx ((ty_src, src), (ty_dst, (Asmt.Reg Asmt.R11)))) :: (Asmt.Mov (ty_dst, Asmt.Reg Asmt.R11, dst)) :: (fixErroneousAgain t)
+
             (* if src imm is more than 32bit number *)
+
             | Asmt.Binary (Asmt.QuadWord, binop, (Asmt.Imm num as imm), dst) when not (Z.fits_int32 num) ->
                 (Asmt.Mov (Asmt.QuadWord, imm, Asmt.Reg Asmt.R10)) :: (Asmt.Binary (Asmt.QuadWord, binop, Asmt.Reg Asmt.R10, dst)) :: (fixErroneousAgain t)
             | Asmt.Cmp (Asmt.QuadWord, (Asmt.Imm num as imm), dst) when not (Z.fits_int32 num) ->

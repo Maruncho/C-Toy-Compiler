@@ -6,8 +6,12 @@ type token =
     | ID of string
     | INT32_LIT of Z.t
     | INT64_LIT of Z.t
+    | UINT32_LIT of Z.t
+    | UINT64_LIT of Z.t
     | INT
     | LONG
+    | SIGNED
+    | UNSIGNED
     | VOID
     | IF
     | ELSE
@@ -70,8 +74,12 @@ let string_of_token = function
     | ID str -> "ID " ^ str
     | INT32_LIT num -> (Z.to_string num)
     | INT64_LIT num -> (Z.to_string num)
+    | UINT32_LIT num -> (Z.to_string num)
+    | UINT64_LIT num -> (Z.to_string num)
     | INT -> "int"
     | LONG -> "long"
+    | SIGNED -> "signed"
+    | UNSIGNED -> "unsigned"
     | VOID -> "void"
     | IF -> "if"
     | ELSE -> "else"
@@ -139,6 +147,8 @@ let token_regexes =
     (fun str -> match str with
         | "int" -> INT
         | "long" -> LONG
+        | "signed" -> SIGNED
+        | "unsigned" -> UNSIGNED
         | "void" -> VOID
         | "if" -> IF
         | "else" -> ELSE
@@ -156,8 +166,14 @@ let token_regexes =
         | "extern" -> EXTERN
         | _ -> ID str))
 ;
+    (* Unsigned Integer64 *)
+    (re {|([0-9]+)(?:[lL][uU]|[uU][lL])\b|}, (fun str -> UINT64_LIT (Z.of_string str)))
+;
     (* Integer64 *)
     (re {|([0-9]+)[lL]\b|}, (fun str -> INT64_LIT (Z.of_string str)))
+;
+    (* Unsigned Integer32 *)
+    (re {|([0-9]+)[uU]\b|}, (fun str -> UINT32_LIT (Z.of_string str)))
 ;
     (* Integer32 *)
     (re {|([0-9]+)\b|}, (fun str -> INT32_LIT (Z.of_string str)))

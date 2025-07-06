@@ -1,7 +1,7 @@
 
 type identifier = string
 
-type data_type = Int | Long
+type data_type = Int | Long | UInt | ULong
 
 type var_type = AutoVariable of data_type
               | StaticVariable of data_type
@@ -25,7 +25,7 @@ and expr = Literal of lit
           | Ternary of typed_expr_sp * typed_expr * typed_expr
           | Call of identifier * typed_expr list
 
-and lit = Int32 of Int32.t | Int64 of Int64.t
+and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t
 
 and postfix = stmt list
 and typed_expr_sp = typed_expr * postfix
@@ -67,6 +67,22 @@ and decl = VarDecl of var_decl
 type toplevel = decl
 
 type program = Program of toplevel list
+
+let size = function
+    | Int -> 4
+    | UInt -> 4
+    | Long -> 8
+    | ULong -> 8
+
+let signed = function
+    | Int | Long -> true
+    | UInt | ULong -> false
+
+let flipSigned = function
+    | Int -> UInt
+    | Long -> ULong
+    | UInt -> Int
+    | ULong -> Long
 
 let string_unary_op = function
     | Complement -> "~"
@@ -111,10 +127,14 @@ let string_storage_specifier_opt = function
 let string_data_type = function
     | Int -> "int"
     | Long -> "long"
+    | UInt -> "unsigned int"
+    | ULong -> "unsigned long"
 
 let string_literal = function
     | Int32 num -> ("Int32(" ^ (Int32.to_string num) ^ ")")
     | Int64 num -> ("Int64(" ^ (Int64.to_string num) ^ ")")
+    | UInt32 num -> ("UInt32(" ^ (Int32.to_string num) ^ ")")
+    | UInt64 num -> ("UInt64(" ^ (Int64.to_string num) ^ ")")
 
 
 let rec print_expr tabs expr =

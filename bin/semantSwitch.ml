@@ -7,6 +7,8 @@ let parse (program:Ast.program) =
     let toZ = function
         | Ast.Int32 num -> Z.of_int32 num
         | Ast.Int64 num -> Z.of_int64 num
+        | Ast.UInt32 num -> Z.of_int32 num
+        | Ast.UInt64 num -> Z.of_int64 num
     in let rec parseStatement stmt switch env default = match stmt with
         | Ast.Case (c, _) -> if not switch then raise (ParserError "Case statement cannot be outside of switch.")
                              else if Env.mem (toZ c) env then raise (ParserError ("Duplicate case " ^ (Z.to_string (toZ c))))

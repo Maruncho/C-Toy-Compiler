@@ -125,8 +125,10 @@ let tryAddVariable (localEnv: env) (globalEnv: envGlobal) level storage_opt iden
                 if isInScope identifier level localEnv then raise (EnvironmentError (identifier ^ " is already in scope")) else
                 (add identifier (Var (new_identifier, typ), level) localEnv), globalEnv
             | (Some Ast.Static, _) ->
-                if isInScope identifier level localEnv then raise (EnvironmentError (identifier ^ " is already in scope"))
-                else (add identifier (StaticVar (new_identifier, typ), level) localEnv), globalEnv
+                if isInScope identifier level localEnv then raise (EnvironmentError (identifier ^ " is already in scope")) else
+                let _ = (if (Option.is_some init_opt) then
+                    let _ = try (Const.parseConstExpr (Option.get init_opt)) with Const.ConstError e -> raise (EnvironmentError e) in () else ())
+                in (add identifier (StaticVar (new_identifier, typ), level) localEnv), globalEnv
             | (Some Ast.Extern, Some _) -> raise (EnvironmentError "Cannot initialize extern variable inside a function.")
             | (Some Ast.Extern, None) ->
                 begin match find_opt identifier localEnv with

@@ -6,7 +6,7 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
                  And | Or | Xor | LShift | RShift |
                  Equal | NotEqual | LessThan | LessOrEqual | GreaterThan | GreaterOrEqual
 
-type typ = Int32 | Int64
+type typ = Int32 of bool | Int64 of bool (*is_signed*)
 
 type operand = Constant of Z.t * typ
              | Var of identifier * typ
@@ -14,6 +14,7 @@ type operand = Constant of Z.t * typ
 
 type instruction = Return of operand
                  | SignExtend of operand * operand
+                 | ZeroExtend of operand * operand
                  | Truncate of operand * operand
                  | Unary of unary_op * operand * operand
                  | Binary of binary_op * operand * operand * operand
@@ -28,6 +29,10 @@ type toplevel = Function of string * bool(*global*) * (identifier * typ) list * 
               | StaticVariable of string * bool(*global*) * Z.t * typ
 
 type program = Program of toplevel list
+
+let type_signed = function
+    | Int32 s -> s
+    | Int64 s -> s
 
 let operand_type = function
     | Constant (_, t)
@@ -70,6 +75,7 @@ let instruction_str inst =
     match inst with
         | Return opr -> "Return("^(operand_str opr)^")\n"
         | SignExtend (s, d) -> "SignExtend("^(operand_str s)^", "^(operand_str d)^")\n"
+        | ZeroExtend (s, d) -> "ZeroExtend("^(operand_str s)^", "^(operand_str d)^")\n"
         | Truncate (s, d) -> "Truncate("^(operand_str s)^", "^(operand_str d)^")\n"
         | Unary (op, s, d) -> "Unary("^(unary_op_str op)^", "^(operand_str s)^", "^(operand_str d)^")\n"
         | Binary (op, s1, s2, d) -> "Binary("^(binary_op_str op)^", "^(operand_str s1)^", "^(operand_str s2)^", "^(operand_str d)^")\n"

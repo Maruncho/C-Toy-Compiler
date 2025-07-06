@@ -6,7 +6,7 @@ type translationUnitIdentifiersDict = unit Environment.Env.t
 
 type assembly_type = Byte | Word | LongWord | QuadWord
 
-type cond_code = E | NE | G | GE | L | LE
+type cond_code = E | NE | G | GE | L | LE | A | AE | B | BE
 
 type register = RAX | RCX |
                 RDX | RDI |
@@ -16,7 +16,7 @@ type register = RAX | RCX |
 
 type unop = Neg | Not
 type binop = Add | Sub | Mul |
-             And | Or | Xor | Sal | Sar
+             And | Or | Xor | Sal | Sar | Shl | Shr
 
 type operand = Imm of Z.t
              | Reg of register
@@ -26,12 +26,14 @@ type operand = Imm of Z.t
 
 type instruction = Mov of assembly_type * operand * operand
                  | Movsx of (assembly_type * operand) * (assembly_type * operand)
+                 | Movzx of (assembly_type * operand) * (assembly_type * operand)
                  | Unary of assembly_type * unop * operand
                  | Incr of assembly_type * operand
                  | Decr of assembly_type * operand
                  | Binary of assembly_type * binop * operand * operand
                  | Cmp of assembly_type * operand * operand
                  | Idiv of assembly_type * operand
+                 | Div of assembly_type * operand
                  | SignExtend of assembly_type
                  | Jmp of identifier
                  | JmpCC of cond_code * identifier
@@ -56,6 +58,10 @@ let cond_code_str = function
     | GE -> "ge"
     | L -> "l"
     | LE -> "le"
+    | A -> "a"
+    | AE -> "ae"
+    | B -> "b"
+    | BE -> "be"
 
 let type_to_size = function
     | Byte -> 1
@@ -136,6 +142,8 @@ let binop_str op typ = (match op with
     | Xor -> "xor"
     | Sal -> "sal"
     | Sar -> "sar"
+    | Shl -> "shl"
+    | Shr -> "shr"
     ) ^ (p typ) ^ "\t"
 
 let operand_str asm_type oper externalNames =
@@ -152,6 +160,7 @@ let instruction_str inst externalNames =
     (match inst with
         | Mov (typ, s, d) -> "mov"^(p typ)^"\t" ^ (operand_str typ s en) ^ ", " ^ (operand_str typ d en)
         | Movsx ((typ_s, s), (typ_d, d)) -> "movs"^(p typ_s)^(p typ_d)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
+        | Movzx ((typ_s, s), (typ_d, d)) -> "movz"^(p typ_s)^(p typ_d)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
         | Unary (typ, unop, d) -> (unop_str unop typ) ^ (operand_str typ d en)
 
         | Decr (typ, d) -> "dec"^(p typ)^"\t" ^ (operand_str typ d en)
@@ -163,6 +172,7 @@ let instruction_str inst externalNames =
 
         | Cmp (typ, s, d) -> "cmp"^(p typ)^"\t" ^ (operand_str typ s en) ^ ", " ^ (operand_str typ d en)
         | Idiv (typ, s) -> "idiv"^(p typ)^"\t" ^ (operand_str typ s en)
+        | Div (typ, s) -> "div"^(p typ)^"\t" ^ (operand_str typ s en)
         | SignExtend Byte -> failwith "SignExtend Byte doesn't exist."
         | SignExtend Word -> "cwd"
         | SignExtend LongWord -> "cdq"
