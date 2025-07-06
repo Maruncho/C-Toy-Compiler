@@ -1,4 +1,4 @@
 (executable
  (public_name compiler)
  (name main)
- (libraries compiler re core))
+ (libraries compiler re core zarith))

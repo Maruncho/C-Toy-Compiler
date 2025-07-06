@@ -5,21 +5,21 @@
 (generate_opam_files true)
 
 (source
- (github username/reponame))
+ (github Maruncho/C-Toy-Compiler))
 
-(authors "Author Name <author@example.com>")
+(authors "Mario Hlebarov <themariohlebarov@gmail.com>")
 
-(maintainers "Maintainer Name <maintainer@example.com>")
+(maintainers "Mario Hlebarov <themariohlebarov@gmail.com>")
 
-(license LICENSE)
+(license "MIT")
 
-(documentation https://url/to/documentation)
+(documentation https://github.com/Maruncho/C-Toy-Compiler)
 
 (package
  (name compiler)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml)
+ (depends ocaml zarith core re)
  (tags
   ("add topics" "to describe" your project)))
 

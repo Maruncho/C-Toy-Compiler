@@ -6,11 +6,15 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
                  And | Or | Xor | LShift | RShift |
                  Equal | NotEqual | LessThan | LessOrEqual | GreaterThan | GreaterOrEqual
 
-type operand = Constant of Int32.t
-             | Var of identifier
-             | StaticVar of identifier
+type typ = Int32 | Int64
+
+type operand = Constant of Z.t * typ
+             | Var of identifier * typ
+             | StaticVar of identifier * typ
 
 type instruction = Return of operand
+                 | SignExtend of operand * operand
+                 | Truncate of operand * operand
                  | Unary of unary_op * operand * operand
                  | Binary of binary_op * operand * operand * operand
                  | Copy of operand * operand
@@ -20,10 +24,15 @@ type instruction = Return of operand
                  | Label of identifier
                  | Call of identifier * operand list * operand
 
-type toplevel = Function of string * bool(*global*) * identifier list * instruction list 
-              | StaticVariable of string * bool(*global*) * Int32.t
+type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list 
+              | StaticVariable of string * bool(*global*) * Z.t * typ
 
 type program = Program of toplevel list
+
+let operand_type = function
+    | Constant (_, t)
+    | Var (_, t)
+    | StaticVar (_, t) -> t
 
 let unary_op_str = function
     | Complement -> "NOT"
@@ -52,14 +61,16 @@ let binary_op_str = function
 
 let operand_str oper =
     match oper with
-        | Constant num -> "$" ^ (Int32.to_string num)
-        | Var id -> "%" ^ id
-        | StaticVar lbl -> "("^lbl^")"
+        | Constant (num, _) -> "$" ^ (Z.to_string num)
+        | Var (id, _) -> "%" ^ id
+        | StaticVar (lbl, _) -> "("^lbl^")"
 
 let instruction_str inst =
     "\t" ^
     match inst with
         | Return opr -> "Return("^(operand_str opr)^")\n"
+        | SignExtend (s, d) -> "SignExtend("^(operand_str s)^", "^(operand_str d)^")\n"
+        | Truncate (s, d) -> "Truncate("^(operand_str s)^", "^(operand_str d)^")\n"
         | Unary (op, s, d) -> "Unary("^(unary_op_str op)^", "^(operand_str s)^", "^(operand_str d)^")\n"
         | Binary (op, s1, s2, d) -> "Binary("^(binary_op_str op)^", "^(operand_str s1)^", "^(operand_str s2)^", "^(operand_str d)^")\n"
         | Copy (s, d) -> "Copy("^(operand_str s)^", "^(operand_str d)^")\n"
@@ -72,10 +83,10 @@ let instruction_str inst =
 let toplevel_str tl =
     match tl with
         | Function (name, is_global, params, instructions) ->
-            (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " params)^"):\n" ^
+            (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.split params |> fst))^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
-        | StaticVariable (name, is_global, init) ->
-            (if is_global then "global " else "") ^ "int " ^ name ^ " = " ^ (Int32.to_string init)
+        | StaticVariable (name, is_global, init, _) ->
+            (if is_global then "global " else "") ^ name ^ " = " ^ (Z.to_string init)
 
 
 

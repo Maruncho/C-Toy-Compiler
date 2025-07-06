@@ -24,7 +24,7 @@ let () = try
 
     let (parsed, globalEnv) = Parser.parse lexed in
     (*let _ = Ast.printProgram parsed in*)
-    let () = Environment.globalEnvString globalEnv in
+    (*let () = Environment.globalEnvString globalEnv in*)
     let _ = if m = Parse then (exit 0) in
 
     let (tacky, externalNames) = Tackify.tackify parsed globalEnv in

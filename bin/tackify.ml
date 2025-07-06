@@ -43,60 +43,83 @@ let tackify ast globalEnv =
     let newLbl() = (let t = ".L" ^ (string_of_int (!lblNum)) in let () = lblNum := !lblNum + 1 in t) in
 
     let rec helpParseConditionWithPostfix postfix cond =
-        let oldToNewTemps = List.fold_left (fun lst stmt -> (match stmt with
-            | Ast.Expression (Ast.Unary (Ast.Increment, Ast.Var (old, _))) -> (old, newTemp()) :: lst
-            | Ast.Expression (Ast.Unary (Ast.Decrement, Ast.Var (old, _))) -> (old, newTemp()) :: lst
+        let oldToNewTemps, theirType = (List.fold_left (fun lst stmt -> (match stmt with
+            | Ast.Expression (typ, Ast.Unary (Ast.Increment, (_, Ast.Var (old, _)))) -> ((old, newTemp()), parseType typ) :: lst
+            | Ast.Expression (typ, Ast.Unary (Ast.Decrement, (_, Ast.Var (old, _)))) -> ((old, newTemp()), parseType typ) :: lst
             | _ -> lst
-        )) [] postfix
+        )) [] postfix) |> List.split
         in let rec walkExpr expr = match expr with
-            | Ast.Var (old, t) -> begin match List.assoc_opt old oldToNewTemps with
-                | None -> Ast.Var (old, t)
-                | Some neww -> Ast.Var (neww, t)
+            | typ, Ast.Var (old, t) -> begin match List.assoc_opt old oldToNewTemps with
+                | None -> typ, Ast.Var (old, t)
+                | Some neww -> typ, Ast.Var (neww, t)
             end
-            | Ast.Unary (op, expr) -> Ast.Unary (op, walkExpr expr)
-            | Ast.Binary (op, expr1, expr2) -> Ast.Binary (op, walkExpr expr1, walkExpr expr2)
-            | Ast.BinarySp (op, expr1_sp, expr2) -> Ast.BinarySp (op, expr1_sp, walkExpr expr2)
-            | Ast.BinaryAssign (op, var, expr) -> Ast.BinaryAssign (op, walkExpr var, walkExpr expr)
-            | Ast.Assignment (var, expr) -> Ast.Assignment (walkExpr var, walkExpr expr)
-            | Ast.Ternary (cond_sp, th, el) -> Ast.Ternary (cond_sp, walkExpr th, walkExpr el)
-            | _ -> expr
+            | typ, Ast.Unary (op, expr) -> typ, Ast.Unary (op, walkExpr expr)
+            | typ, Ast.Binary (op, expr1, expr2) -> typ, Ast.Binary (op, walkExpr expr1, walkExpr expr2)
+            | typ, Ast.BinarySp (op, expr1_sp, expr2) -> typ, Ast.BinarySp (op, expr1_sp, walkExpr expr2)
+            | typ, Ast.BinaryAssign (op, var, expr) -> typ, Ast.BinaryAssign (op, walkExpr var, walkExpr expr)
+            | typ, Ast.Assignment (var, expr) -> typ, Ast.Assignment (walkExpr var, walkExpr expr)
+            | typ, Ast.Ternary (cond_sp, th, el) -> typ, Ast.Ternary (cond_sp, walkExpr th, walkExpr el)
+            | typ, Ast.Cast (new_typ, expr) -> typ, Ast.Cast (new_typ, walkExpr expr)
+            | typ, Ast.Call (id, args) -> typ, Ast.Call (id, List.map walkExpr args)
+            | typ, Ast.Literal lit -> typ, Ast.Literal lit
 
-        in let () = List.iter (fun (x,y) -> (Tac.Copy (Tac.Var x, Tac.Var y)) #: instrs) oldToNewTemps
+        in let () = List.iter (fun ((x,y),typ) -> (Tac.Copy (Tac.Var (x, typ), Tac.Var (y, typ))) #: instrs) (List.combine oldToNewTemps theirType)
         in let () = List.iter (fun x -> parseStmt x) postfix
         in walkExpr cond
 
     and parseCases cond cases = match cases with
         | [] -> ()
-        | (i32, lbl) :: t ->
-            let dst = Tac.Var (newLbl()) in
-            let () = (Tac.Binary (Tac.Equal, cond, Tac.Constant i32, dst)) #: instrs in
+        | (lit, lbl) :: t ->
+            let (const, typ) = parseLiteral lit in
+            let dst = Tac.Var (newLbl(), typ) in
+            let () = (Tac.Binary (Tac.Equal, cond, Tac.Constant (const, typ), dst)) #: instrs in
             let () = (Tac.JumpIfNotZero (dst, lbl)) #: instrs in
             parseCases cond t
 
-    and parseExpr expr =
-        match expr with
-            | Ast.Int32 num -> Tac.Constant num
-            | Ast.Var (id, Ast.AutoVariable) -> Tac.Var id
-            | Ast.Var (id, Ast.StaticVariable) -> Tac.StaticVar id
-            | Ast.Var (_, Ast.Function _) -> failwith "No support for function variables"
+    and parseLiteral = function
+        | Ast.Int32 num -> Z.of_int32 num, Tac.Int32
+        | Ast.Int64 num -> Z.of_int64 num, Tac.Int64
 
-            | Ast.Unary (Ast.Increment, dst) ->
+    and parseType : Ast.data_type -> Tac.typ = function
+        | Ast.Int -> Tac.Int32
+        | Ast.Long -> Tac.Int64
+
+    and parseExpr (expr:Ast.typed_expr) =
+        match expr with
+            | _, Ast.Literal lit -> let a,b = (parseLiteral lit) in Tac.Constant (a, b)
+            | typ, Ast.Var (id, Ast.AutoVariable _) -> Tac.Var (id, parseType typ)
+            | typ, Ast.Var (id, Ast.StaticVariable _) -> Tac.StaticVar (id, parseType typ)
+            | _, Ast.Var (_, Ast.Function _) -> failwith "No support for function variables"
+
+            | _, Ast.Cast (new_type, ((inner_type, _) as inner_expr)) ->
+                let result = parseExpr inner_expr in
+                if inner_type = new_type then result else
+                let dst = Tac.Var (newTemp(), parseType new_type) in
+                let () = begin match new_type with
+                    | Ast.Long -> (Tac.SignExtend (result, dst)) #: instrs
+                    | Ast.Int -> (Tac.Truncate (result, dst)) #: instrs
+                end in
+                dst
+
+            | _, Ast.Unary (Ast.Increment, dst) ->
                 let dst = parseExpr dst in
                 let () = (Tac.Unary (Tac.Incr, dst, dst)) #: instrs in
                 dst
-            | Ast.Unary (Ast.Decrement, dst) ->
+
+            | _, Ast.Unary (Ast.Decrement, dst) ->
                 let dst = parseExpr dst in
                 let () = (Tac.Unary (Tac.Decr, dst, dst)) #: instrs in
                 dst
-            | Ast.Unary (Ast.Rvalue, src) -> parseExpr src
-            | Ast.Unary (op, expr) ->
+
+            | _, Ast.Unary (Ast.Rvalue, src) -> parseExpr src
+            | typ, Ast.Unary (op, expr) ->
                 let src = parseExpr expr in
-                let dst = Tac.Var (newTemp()) in
+                let dst = Tac.Var (newTemp(), parseType typ) in
                 let op = parseUnaryOp op in
                 let () = (Tac.Unary (op, src, dst)) #: instrs in
                 dst
 
-            | Ast.BinarySp (Ast.LogAnd, (left, between), right) ->
+            | _, Ast.BinarySp (Ast.LogAnd, (left, between), right) ->
                 let false_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
@@ -104,15 +127,15 @@ let tackify ast globalEnv =
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfZero (right, false_lbl)) #: instrs in
-                let result = Tac.Var (newTemp()) in
-                let () = (Tac.Copy (Tac.Constant 1l, result)) #: instrs in
+                let result = Tac.Var (newTemp(), Tac.Int32) in
+                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32), result)) #: instrs in
                 let () = (Tac.Jump end_lbl) #: instrs in
                 let () = (Tac.Label false_lbl) #: instrs in
-                let () = (Tac.Copy (Tac.Constant 0l, result)) #: instrs in
+                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.BinarySp (Ast.LogOr, (left, between), right) ->
+            | _, Ast.BinarySp (Ast.LogOr, (left, between), right) ->
                 let true_lbl = newLbl() in
                 let end_lbl = newLbl() in
                 let left = parseExpr left in
@@ -120,45 +143,45 @@ let tackify ast globalEnv =
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
                 let right = parseExpr right in
                 let () = (Tac.JumpIfNotZero (right, true_lbl)) #: instrs in
-                let result = Tac.Var (newTemp()) in
-                let () = (Tac.Copy (Tac.Constant 0l, result)) #: instrs in
+                let result = Tac.Var (newTemp(), Tac.Int32) in
+                let () = (Tac.Copy (Tac.Constant (Z.zero, Tac.Int32), result)) #: instrs in
                 let () = (Tac.Jump end_lbl) #: instrs in
                 let () = (Tac.Label true_lbl) #: instrs in
-                let () = (Tac.Copy (Tac.Constant 1l, result)) #: instrs in
+                let () = (Tac.Copy (Tac.Constant (Z.one, Tac.Int32), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.BinarySp (Ast.Comma, _, _) -> failwith "TODO: Add Comma"
+            | _, Ast.BinarySp (Ast.Comma, _, _) -> failwith "TODO: Add Comma"
 
-            | Ast.Binary (op, left, right) ->
+            | typ, Ast.Binary (op, left, right) ->
                 let src1 = parseExpr left in
                 let src2 = parseExpr right in
-                let dst = Tac.Var (newTemp()) in
+                let dst = Tac.Var (newTemp(), parseType typ) in
                 let op = parseBinaryOp op in
                 let () = (Tac.Binary (op, src1, src2, dst)) #: instrs in
                 dst
 
-            | Ast.BinaryAssign (op, dst, src) ->
-                let () = match dst with Ast.Var _ -> () | _ -> failwith "BinaryAssign dst is not a var" in
+            | _, Ast.BinaryAssign (op, dst, src) ->
+                let () = match dst with (_, Ast.Var _) -> () | _ -> failwith "BinaryAssign dst is not a var" in
                 let src = parseExpr src in
                 let dst = parseExpr dst in
                 let op = parseBinaryOp op in
                 let () = (Tac.Binary (op, dst, src, dst)) #: instrs in
                 dst
 
-            | Ast.Assignment (left, right) ->
-                let dst = (match left with Ast.Var (v, Ast.AutoVariable) -> Tac.Var v
-                                         | Ast.Var (v, Ast.StaticVariable) -> Tac.StaticVar v
+            | typ, Ast.Assignment (left, right) ->
+                let dst = (match left with (_, Ast.Var (v, Ast.AutoVariable _)) -> Tac.Var (v, parseType typ)
+                                         | (_, Ast.Var (v, Ast.StaticVariable _)) -> Tac.StaticVar (v, parseType typ)
                                          | _ -> failwith "lvalue of Assignment is not a variable") in
                 let src = parseExpr right in
                 let () = (Tac.Copy (src, dst)) #: instrs in
                 dst
 
-            | Ast.Ternary ((cond, postfix), th, el) -> 
+            | typ, Ast.Ternary ((cond, postfix), th, el) -> 
                 let cond = parseExpr cond in
                 let else_lbl = newLbl() in
                 let end_lbl = newLbl() in
-                let result = Tac.Var(newTemp()) in
+                let result = Tac.Var(newTemp(), parseType typ) in
                 let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
                 let () = List.iter (fun stmt -> parseStmt stmt) postfix in
                 let th = parseExpr th in
@@ -171,9 +194,9 @@ let tackify ast globalEnv =
                 let () = (Tac.Label end_lbl) #: instrs in
                 result
 
-            | Ast.Call (name, args) ->
+            | typ, Ast.Call (name, args) ->
                 let args = List.map (fun arg -> parseExpr arg) args in
-                let dst = Tac.Var(newTemp()) in
+                let dst = Tac.Var(newTemp(), parseType typ) in
                 let () = (Tac.Call (name, args, dst)) #: instrs in
                 dst
 
@@ -273,18 +296,17 @@ let tackify ast globalEnv =
 
     and parseDecl decl =
         match decl with
-            | Ast.VarDecl (_, None, None) -> ()
-            | Ast.VarDecl (id, Some expr, None) -> 
-                let src = parseExpr expr in
-                (Tac.Copy (src, Tac.Var(id))) #: instrs
+            | Ast.VarDecl (_, None, _, None) -> ()
+            | Ast.VarDecl (id, Some expr, typ, None) -> 
+                let src = parseExpr (typ, expr) in
+                (Tac.Copy (src, Tac.Var(id, parseType typ))) #: instrs
 
-            | Ast.VarDecl (id, None, Some Ast.Static) ->
-                localStatics := (Tac.StaticVariable (id, false, 0l)) :: !localStatics
+            | Ast.VarDecl (id, None, typ, Some Ast.Static) ->
+                localStatics := (Tac.StaticVariable (id, false, Z.zero, parseType typ)) :: !localStatics
 
-            | Ast.VarDecl (id, Some expr , Some Ast.Static) ->
-                let i = Environment.parseConstExpr expr (*(Some globalEnv)*) in
-                let i = match i with Some i -> i | None -> failwith "parseConstExprssion returned None after passing a globalEnv" in
-                localStatics := (Tac.StaticVariable (id, false, i)) :: !localStatics
+            | Ast.VarDecl (id, Some expr , typ, Some Ast.Static) ->
+                let i = Const.parseConstExpr (typ, expr) (*(Some globalEnv)*) in
+                localStatics := (Tac.StaticVariable (id, false, i, parseType typ)) :: !localStatics
 
             | _ -> ()
 
@@ -296,7 +318,7 @@ let tackify ast globalEnv =
     in let rec parseTopLevel tls = match tls with
         | [] -> []
         | tl :: rest -> begin match tl with
-            | Ast.FunDecl (name, params, block_items, _) ->
+            | Ast.FunDecl (name, params, block_items, _, _) ->
                 let is_global = begin match Environment.find_opt name globalEnv with
                     | None -> failwith "DEBUG: Function found in AST, but not in globalEnv"
                     | Some (Environment.VarAttr _) -> failwith "DEBUG: Function found in AST, but var found in globalEnv"
@@ -307,7 +329,8 @@ let tackify ast globalEnv =
                     | Some items -> let () = parseBlockItems items in true
                 end in
                 if not has_body then parseTopLevel rest else
-                let () = (Tac.Return (Tac.Constant 0l)) #: instrs in
+                let () = (Tac.Return (Tac.Constant (Z.zero, Tac.Int64))) #: instrs in
+                let params = List.map (fun (typ, id) -> (id, parseType typ)) params in
                 let lEXECUTE_LHS_FIRST = Tac.Function (name, is_global, params, List.rev !instrs) in
                 let () = instrs := []
                 in lEXECUTE_LHS_FIRST :: (parseTopLevel rest)
@@ -317,17 +340,13 @@ let tackify ast globalEnv =
 
     in let parseStaticVarsAndNoticeUndefinedExternFunctions() =
         Environment.Env.fold (fun _ v acc -> match v with
-        | Environment.VarAttr (id,initial,is_global) ->
+        | Environment.VarAttr (id,initial,typ,is_global) ->
             begin match initial with
                 | Environment.NoInitializer -> let () = undefinedNames := Environment.setAdd id !undefinedNames in acc
-                | Environment.Tentative -> (Tac.StaticVariable (id,is_global,0l)) :: acc
-                | Environment.Initial i -> (Tac.StaticVariable (id,is_global,i)) :: acc
-                | Environment.SecondPass expr ->
-                    let i = Environment.parseConstExpr expr (*(Some globalEnv)*) in
-                    let i = match i with Some i -> i | None -> failwith "parseConstExprssion returned None after passing a globalEnv" in
-                    (Tac.StaticVariable (id, is_global, i)) :: acc
+                | Environment.Tentative -> (Tac.StaticVariable (id, is_global, Z.zero, parseType typ)) :: acc
+                | Environment.Initial i -> (Tac.StaticVariable (id, is_global, i, parseType typ)) :: acc
             end
-        | Environment.FunAttr ((id,_,is_defined),is_global) ->
+        | Environment.FunAttr ((id,_,_,is_defined),is_global) ->
             let () = if (not is_defined) && is_global then undefinedNames := Environment.setAdd id !undefinedNames
             in acc
     ) globalEnv []

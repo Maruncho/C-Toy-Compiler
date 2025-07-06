@@ -4,8 +4,10 @@ exception LexError of string
 
 type token =
     | ID of string
-    | INT32_LIT of Int32.t
-    | INT32
+    | INT32_LIT of Z.t
+    | INT64_LIT of Z.t
+    | INT
+    | LONG
     | VOID
     | IF
     | ELSE
@@ -66,8 +68,10 @@ type token =
 
 let string_of_token = function
     | ID str -> "ID " ^ str
-    | INT32_LIT num -> (Int32.to_string num)
-    | INT32 -> "int"
+    | INT32_LIT num -> (Z.to_string num)
+    | INT64_LIT num -> (Z.to_string num)
+    | INT -> "int"
+    | LONG -> "long"
     | VOID -> "void"
     | IF -> "if"
     | ELSE -> "else"
@@ -133,7 +137,8 @@ let token_regexes =
     (* Identifiers and keywords *)
     (re {|([a-zA-Z_]\w*)\b|},
     (fun str -> match str with
-        | "int" -> INT32
+        | "int" -> INT
+        | "long" -> LONG
         | "void" -> VOID
         | "if" -> IF
         | "else" -> ELSE
@@ -151,8 +156,11 @@ let token_regexes =
         | "extern" -> EXTERN
         | _ -> ID str))
 ;
+    (* Integer64 *)
+    (re {|([0-9]+)[lL]\b|}, (fun str -> INT64_LIT (Z.of_string str)))
+;
     (* Integer32 *)
-    (re {|([0-9]+)\b|}, (fun str -> INT32_LIT (Int32.of_string str)))
+    (re {|([0-9]+)\b|}, (fun str -> INT32_LIT (Z.of_string str)))
 ;
     (* ( *)
     (re {|(\()|}, (fun _ -> LPAREN))

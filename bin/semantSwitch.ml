@@ -1,13 +1,16 @@
 
 exception ParserError of string
 
-module Env32 = Set.Make(struct type t = Int32.t let compare = Int32.compare end)
+module Env = Set.Make(struct type t = Z.t let compare = Z.compare end)
 
 let parse (program:Ast.program) =
-    let rec parseStatement stmt switch env default = match stmt with
+    let toZ = function
+        | Ast.Int32 num -> Z.of_int32 num
+        | Ast.Int64 num -> Z.of_int64 num
+    in let rec parseStatement stmt switch env default = match stmt with
         | Ast.Case (c, _) -> if not switch then raise (ParserError "Case statement cannot be outside of switch.")
-                             else if Env32.mem c env then raise (ParserError ("Duplicate case " ^ (Int32.to_string c)))
-                             else default, (Env32.add c env)
+                             else if Env.mem (toZ c) env then raise (ParserError ("Duplicate case " ^ (Z.to_string (toZ c))))
+                             else default, (Env.add (toZ c) env)
         | Ast.Default _ -> if not switch then raise (ParserError "Default statement cannot be outside of switch.")
                            else if default then raise (ParserError "Duplicate default.")
                            else true, env
@@ -31,7 +34,7 @@ let parse (program:Ast.program) =
             let denv = parseStatement body switch env default in denv
 
         | Ast.Switch (_, _, stmt, _, _) ->
-            let _ = parseStatement stmt true (Env32.empty) false in default, env
+            let _ = parseStatement stmt true (Env.empty) false in default, env
 
         | _ -> default, env
 
@@ -43,7 +46,7 @@ let parse (program:Ast.program) =
         | _ :: t -> parseBlock t switch env default
 
     in let parseToplevel = function
-        | Ast.FunDecl (_, _, Some body, _) -> let _ = parseBlock body false (Env32.empty) false in ()
+        | Ast.FunDecl (_, _, Some body, _, _) -> let _ = parseBlock body false (Env.empty) false in ()
         | _ -> ()
     in
     match program with
