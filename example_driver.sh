@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 files=()
-gcc_args=""
+c_arg=""
+lib_args=""
 o_arg=""
 o_arg_default=""
 long_flag=""
@@ -10,7 +11,11 @@ long_flag=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -c)
-            gcc_args="-c"
+            c_arg="-c"
+            shift
+            ;;
+        -l*)
+            lib_args="${lib_args} $1"
             shift
             ;;
         -o)
@@ -50,14 +55,14 @@ if [[ ${#files[@]} -lt 1 ]]; then
     exit 1
 fi
 
-if [[ -n "$gcc_args" && -n "$o_arg" && ${#files[@]} -gt 1 ]]; then
+if [[ -n "$c_arg" && -n "$o_arg" && ${#files[@]} -gt 1 ]]; then
     echo "Error: -o cannot be used with multiple files when -c is present." >&2
     exit 1
 fi
 
 # If no -o provided, and exactly one file => set o_arg_default
 if [[ -z "$o_arg" && ${#files[@]} -eq 1 ]]; then
-    if [[ $gcc_args = "-c" ]]; then
+    if [[ $c_arg = "-c" ]]; then
         o_arg_default="${files[0]%.*}.o"
     else
         o_arg_default="${files[0]%.*}"
@@ -99,9 +104,9 @@ done
 
 # Compile assembly with gcc
 if [[ -n "$o_arg" ]]; then
-    gcc $gcc_args "${s_files[@]}" -o "$o_arg"
+    gcc $c_arg "${s_files[@]}" -o "$o_arg" $lib_args
 else
-    gcc $gcc_args "${s_files[@]}" -o "$o_arg_default"
+    gcc $c_arg "${s_files[@]}" -o "$o_arg_default" $lib_args
 fi
 
 # Clean up .s files
