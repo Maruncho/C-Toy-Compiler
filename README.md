@@ -23,4 +23,4 @@ C Source code => Run gcc preprocessor (.c -> .i) => Run this compiler (.i -> .s)
 ## Misc:
 - The driver accepts --* arguments, but that's for debugging and running the tests provided by the book.
 - The driver accepts the -c flag, which behaves exactly like gcc.
-- The driver accepts -l<lib> just like gcc does.
+- The driver accepts -l*libname* just like gcc does.
