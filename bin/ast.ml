@@ -1,7 +1,7 @@
 
 type identifier = string
 
-type data_type = Int | Long | UInt | ULong
+type data_type = Int | Long | UInt | ULong | Double
 
 type var_type = AutoVariable of data_type
               | StaticVariable of data_type
@@ -25,7 +25,8 @@ and expr = Literal of lit
           | Ternary of typed_expr_sp * typed_expr * typed_expr
           | Call of identifier * typed_expr list
 
-and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t
+and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t 
+        | Float64 of float
 
 and postfix = stmt list
 and typed_expr_sp = typed_expr * postfix
@@ -73,16 +74,24 @@ let size = function
     | UInt -> 4
     | Long -> 8
     | ULong -> 8
+    | Double -> 100_8
 
 let signed = function
     | Int | Long -> true
     | UInt | ULong -> false
+    | _ -> failwith "Cannot use with non-integral types."
+
+let isFloatingPoint = function
+    | Double -> true
+    | Int | UInt | Long | ULong -> false
+
 
 let flipSigned = function
     | Int -> UInt
     | Long -> ULong
     | UInt -> Int
     | ULong -> Long
+    | _ -> failwith "Cannot use with non-integral types."
 
 let string_unary_op = function
     | Complement -> "~"
@@ -129,12 +138,14 @@ let string_data_type = function
     | Long -> "long"
     | UInt -> "unsigned int"
     | ULong -> "unsigned long"
+    | Double -> "double"
 
 let string_literal = function
     | Int32 num -> ("Int32(" ^ (Int32.to_string num) ^ ")")
     | Int64 num -> ("Int64(" ^ (Int64.to_string num) ^ ")")
     | UInt32 num -> ("UInt32(" ^ (Int32.to_string num) ^ ")")
     | UInt64 num -> ("UInt64(" ^ (Int64.to_string num) ^ ")")
+    | Float64 num -> ("Float64("^ (Float.to_string num) ^")")
 
 
 let rec print_expr tabs expr =

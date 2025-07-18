@@ -8,10 +8,12 @@ type token =
     | INT64_LIT of Z.t
     | UINT32_LIT of Z.t
     | UINT64_LIT of Z.t
+    | DOUBLE_LIT of float
     | INT
     | LONG
     | SIGNED
     | UNSIGNED
+    | DOUBLE
     | VOID
     | IF
     | ELSE
@@ -76,10 +78,12 @@ let string_of_token = function
     | INT64_LIT num -> (Z.to_string num)
     | UINT32_LIT num -> (Z.to_string num)
     | UINT64_LIT num -> (Z.to_string num)
+    | DOUBLE_LIT num -> (Float.to_string num)
     | INT -> "int"
     | LONG -> "long"
     | SIGNED -> "signed"
     | UNSIGNED -> "unsigned"
+    | DOUBLE -> "double"
     | VOID -> "void"
     | IF -> "if"
     | ELSE -> "else"
@@ -139,6 +143,7 @@ let string_of_token = function
     | EOF -> "eof"
 
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
+let reLiteral regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|([^\w.](?:.|\s)*)|}] |> Re.compile
 
 let token_regexes =
 [
@@ -149,6 +154,7 @@ let token_regexes =
         | "long" -> LONG
         | "signed" -> SIGNED
         | "unsigned" -> UNSIGNED
+        | "double" -> DOUBLE
         | "void" -> VOID
         | "if" -> IF
         | "else" -> ELSE
@@ -166,17 +172,20 @@ let token_regexes =
         | "extern" -> EXTERN
         | _ -> ID str))
 ;
+    (* Double *)
+    (reLiteral {|((?:[0-9]*\.[0-9]+|[0-9]+\.?)[Ee][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.)|}, (fun str -> DOUBLE_LIT (Float.of_string str)))
+;
     (* Unsigned Integer64 *)
-    (re {|([0-9]+)(?:[lL][uU]|[uU][lL])\b|}, (fun str -> UINT64_LIT (Z.of_string str)))
+    (reLiteral {|([0-9]+)(?:[lL][uU]|[uU][lL])\b|}, (fun str -> UINT64_LIT (Z.of_string str)))
 ;
     (* Integer64 *)
-    (re {|([0-9]+)[lL]\b|}, (fun str -> INT64_LIT (Z.of_string str)))
+    (reLiteral {|([0-9]+)[lL]\b|}, (fun str -> INT64_LIT (Z.of_string str)))
 ;
     (* Unsigned Integer32 *)
-    (re {|([0-9]+)[uU]\b|}, (fun str -> UINT32_LIT (Z.of_string str)))
+    (reLiteral {|([0-9]+)[uU]\b|}, (fun str -> UINT32_LIT (Z.of_string str)))
 ;
     (* Integer32 *)
-    (re {|([0-9]+)\b|}, (fun str -> INT32_LIT (Z.of_string str)))
+    (reLiteral {|([0-9]+)\b|}, (fun str -> INT32_LIT (Z.of_string str)))
 ;
     (* ( *)
     (re {|(\()|}, (fun _ -> LPAREN))

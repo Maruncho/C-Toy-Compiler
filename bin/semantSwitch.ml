@@ -1,18 +1,25 @@
 
 exception ParserError of string
 
-module Env = Set.Make(struct type t = Z.t let compare = Z.compare end)
+let compare n1 n2 = match n1, n2 with
+    | Const.I _, Const.D _ -> -1
+    | Const.D _, Const.I _ -> -1
+    | Const.D n1, Const.D n2 -> Float.compare n1 n2
+    | Const.I n1, Const.I n2 -> Z.compare n1 n2
+
+module Env = Set.Make(struct type t = Const.number let compare = compare end)
 
 let parse (program:Ast.program) =
-    let toZ = function
-        | Ast.Int32 num -> Z.of_int32 num
-        | Ast.Int64 num -> Z.of_int64 num
-        | Ast.UInt32 num -> Z.of_int32 num
-        | Ast.UInt64 num -> Z.of_int64 num
+    let toNumber = function
+        | Ast.Int32 num -> Const.I (Z.of_int32 num)
+        | Ast.Int64 num -> Const.I (Z.of_int64 num)
+        | Ast.UInt32 num -> Const.I (Z.of_int32 num)
+        | Ast.UInt64 num -> Const.I (Z.of_int64 num)
+        | Ast.Float64 num -> Const.D num 
     in let rec parseStatement stmt switch env default = match stmt with
         | Ast.Case (c, _) -> if not switch then raise (ParserError "Case statement cannot be outside of switch.")
-                             else if Env.mem (toZ c) env then raise (ParserError ("Duplicate case " ^ (Z.to_string (toZ c))))
-                             else default, (Env.add (toZ c) env)
+                             else if Env.mem (toNumber c) env then raise (ParserError ("Duplicate case " ^ (Const.toString (toNumber c))))
+                             else default, (Env.add (toNumber c) env)
         | Ast.Default _ -> if not switch then raise (ParserError "Default statement cannot be outside of switch.")
                            else if default then raise (ParserError "Duplicate default.")
                            else true, env

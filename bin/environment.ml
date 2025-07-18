@@ -1,7 +1,7 @@
 
 type fun_data = string * Ast.data_type list * Ast.data_type * bool (* name, params, ret_type, is_defined *)
 
-type initial_value = Tentative | Initial of Z.t | NoInitializer
+type initial_value = Tentative | Initial of Const.number | NoInitializer
 
 type decl_type = Var of string * Ast.data_type
                | StaticVar of string * Ast.data_type

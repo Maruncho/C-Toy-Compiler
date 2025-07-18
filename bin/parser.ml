@@ -82,6 +82,15 @@ let parse tokens =
         | L.LOGOR -> Ast.LogOr
         | token -> raise (ParserError ("Invalid operator sp " ^ (Lexer.string_of_token token)))
 
+    in let isNotFloatable = function
+        | Ast.Mod
+        | Ast.And
+        | Ast.Or
+        | Ast.Xor
+        | Ast.Lshift
+        | Ast.Rshift -> true
+        | _ -> false
+
     in let isAssign = function
         | 2 -> true
         | _ -> false
@@ -123,6 +132,7 @@ let parse tokens =
         | _ -> -1
 
     in let isTypeSpec = function
+        | L.DOUBLE
         | L.INT
         | L.UNSIGNED
         | L.SIGNED
@@ -139,7 +149,7 @@ let parse tokens =
         | L.EXTERN -> failwith "Cannot use storage class specifiers in for loop initializer declaration"
         | x -> isTypeSpec x
 
-    in let parseLiteral tok = 
+    in let parseLiteral tok =
         let lit = match tok with
             | L.INT32_LIT lit -> lit
             | L.UINT32_LIT lit -> lit
@@ -237,12 +247,19 @@ let parse tokens =
                     | Ast.UInt32 num -> Const.trunc (Z.of_int32_unsigned num) cond_type
                     | Ast.Int64 num -> Const.trunc (Z.of_int64 num) cond_type
                     | Ast.UInt64 num -> Const.trunc (Z.of_int64_unsigned num) cond_type
+                    | Ast.Float64 _ -> Z.zero
+                end in
+                let numFloat = begin match lit with
+                    (*Don't forget to add other floats as the _ hides warnings*)
+                    | Ast.Float64 num -> num
+                    | _ -> 0.0
                 end in
                 let lit = begin match cond_type with
                     | Ast.Int -> Ast.Int32 (Z.to_int32 num)
                     | Ast.UInt -> Ast.UInt32 (Z.to_int32_unsigned num)
                     | Ast.Long -> Ast.Int64 (Z.to_int64 num)
                     | Ast.ULong -> Ast.UInt64 (Z.to_int64_unsigned num)
+                    | Ast.Double -> Ast.Float64 numFloat
                 end in
                 ([(lit, lbl)], Ast.Case (lit, lbl))
 
@@ -294,14 +311,19 @@ let parse tokens =
 
     and parse_type_spec list_opt =
         let rec iter() = match nextToken() with
-            | L.INT -> let t = eatToken() in t :: iter()
-            | L.LONG -> let t = eatToken() in t :: iter()
-            | L.SIGNED -> let t = eatToken() in t :: iter()
-            | L.UNSIGNED -> let t = eatToken() in t :: iter()
+            | L.INT
+            | L.LONG
+            | L.SIGNED
+            | L.UNSIGNED
+            | L.DOUBLE -> let t = eatToken() in t :: iter()
             | _ -> []
 
         in let lst = match list_opt with | None -> iter() | Some lst -> lst
         in if List.is_empty lst then raise (ParserError "No type specifier.") else
+
+        if lst = [L.DOUBLE] then Ast.Double else
+        if List.mem L.DOUBLE lst then raise (ParserError "Can't combine 'double' with other type specifiers") else
+
         let _ = List.fold_left (fun seen x -> (
             if List.mem x seen then raise (ParserError "Invalid type specifier.") else
             if x = L.SIGNED && List.mem L.UNSIGNED seen then raise (ParserError "Type specifier cannot be both signed and unsigned") else
@@ -532,6 +554,7 @@ let parse tokens =
             | L.UINT32_LIT _ as tok -> parseLiteral tok
             | L.INT64_LIT _ as tok -> parseLiteral tok
             | L.UINT64_LIT _ as tok -> parseLiteral tok
+            | L.DOUBLE_LIT num -> Ast.Double, Ast.Literal (Ast.Float64 num)
             | L.LPAREN -> let expr = parse_expr env lvl in
                           let () = expect L.RPAREN in
                           expr
@@ -583,10 +606,11 @@ let parse tokens =
                      (typ typed_expr, Ast.Unary (Ast.Negate, typed_expr))
         | L.COMPLEMENT -> let _ = eatToken() in
                           let typed_expr = parse_unary env lvl in
+                          if Ast.isFloatingPoint (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a floating point expression") else
                           (typ typed_expr, Ast.Unary (Ast.Complement, typed_expr))
         | L.BANG -> let _ = eatToken() in
                     let typed_expr = parse_unary env lvl in
-                    (typ typed_expr, Ast.Unary (Ast.LogNot, typed_expr))
+                    (Ast.Int, Ast.Unary (Ast.LogNot, typed_expr))
         | L.INCREMENT ->
             let _ = eatToken() in
             let right = parse_unary env lvl in
@@ -625,10 +649,14 @@ let parse tokens =
                     match op with
                         | Ast.Assign -> iter (nextToken()) (left_type, (Ast.Assignment (left, l_type_right)))
                         | Ast.Lshift | Ast.Rshift ->
+                            if (Ast.isFloatingPoint cmn_type) then raise (ParserError "Can't take the modulo of a floating point expression") else
                              iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, l_type_right))
                         | _ when left_type <> cmn_type ->
+                            if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
                             iter (nextToken()) (left_type, Ast.Assignment (left, (left_type, Ast.Cast (left_type, (cmn_type, (Ast.Binary (op, new_left, cmn_type_right)))))))
-                        | _ -> iter (nextToken()) (left_type, (Ast.BinaryAssign (op, left, l_type_right)))
+                        | _ ->
+                            if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
+                            iter (nextToken()) (left_type, (Ast.BinaryAssign (op, left, l_type_right)))
 
 
                 else if isTernary p then
@@ -658,6 +686,7 @@ let parse tokens =
                     let op = eatToken() |> parseOp in
                     let typ_left = (typ left) in
                     let right = parse_expr ~min_prec:(p+1) env lvl in
+                    if (typ right) = Ast.Double || typ_left = Ast.Double then raise (ParserError "Can't use double as rhs of a shift operator.") else
                     let new_right = convert_to right typ_left
 
                     in iter (nextToken()) (typ_left, Ast.Binary (op, left, new_right))
@@ -667,10 +696,11 @@ let parse tokens =
 
                     let right = parse_expr ~min_prec:(p+1) env lvl in
                     let cmn_type = get_common_type (typ left) (typ right) in
+                    if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
                     let new_left = convert_to left cmn_type in
                     let new_right = convert_to right cmn_type in
                     let return = if isBoolean p then
-                        (Ast.Int, (Ast.Cast (Ast.Int, (cmn_type, Ast.Binary (op, new_left, new_right)))))
+                        (Ast.Int, Ast.Binary (op, new_left, new_right))
                     else
                         (cmn_type, Ast.Binary (op, new_left, new_right))
 
