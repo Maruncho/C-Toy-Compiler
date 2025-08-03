@@ -10,7 +10,8 @@ type cond_code = E | NE | G | GE | L | LE | A | AE | B | BE | P | NP
 
 type register = RAX | RCX |
                 RDX | RDI |
-                RSI | RSP |
+                RSI | RBP |
+                RSP |
                 R8  | R9  |
                 R10 | R11
 
@@ -28,12 +29,13 @@ type operand = Imm of Z.t
              | Reg of register
              | Pseudo of identifier
              | Data of identifier
-             | Stack of Int64.t
+             | Memory of register * Int64.t
 
 type instruction = Mov of assembly_type * operand * operand
                  | Movsx of (assembly_type * operand) * (assembly_type * operand)
                  | Movzx of (assembly_type * operand) * (assembly_type * operand)
                  | Cvttsx2si of (assembly_type * operand) * (assembly_type * operand)
+                 | Lea of operand * operand
                  | Cvtsi2sx of (assembly_type * operand) * (assembly_type * operand)
                  | Unary of assembly_type * unop * operand
                  | Incr of assembly_type * operand
@@ -60,6 +62,10 @@ type data = string * Const.number * assembly_type * bool
 type ro = string * Const.number * assembly_type
 
 type program = func list * bss list * data list * ro list
+
+let isXMM = function
+    | XMM0 | XMM1 | XMM2 | XMM3 | XMM4 | XMM5 | XMM6 | XMM7 | XMM8 | XMM9 | XMM10 | XMM11 | XMM12 | XMM13 | XMM14 | XMM15 -> true
+    | _ -> false
 
 let cond_code_str = function
     | E -> "e"
@@ -97,6 +103,7 @@ let register_str reg = function
         | RDX -> "%dl"
         | RDI -> "%dil"
         | RSI -> "%sil"
+        | RBP -> "%bpl"
         | RSP -> "%spl"
         | R8  -> "%r8b"
         | R9  -> "%r9b"
@@ -110,6 +117,7 @@ let register_str reg = function
         | RDX -> "%dx"
         | RDI -> "%di"
         | RSI -> "%si"
+        | RBP -> "%bp"
         | RSP -> "%sp"
         | R8  -> "%r8w"
         | R9  -> "%r9w"
@@ -123,6 +131,7 @@ let register_str reg = function
         | RDX -> "%edx"
         | RDI -> "%edi"
         | RSI -> "%esi"
+        | RBP -> "%ebp"
         | RSP -> "%esp"
         | R8  -> "%r8d"
         | R9  -> "%r9d"
@@ -136,6 +145,7 @@ let register_str reg = function
         | RDX -> "%rdx"
         | RDI -> "%rdi"
         | RSI -> "%rsi"
+        | RBP -> "%rbp"
         | RSP -> "%rsp"
         | R8  -> "%r8"
         | R9  -> "%r9"
@@ -161,7 +171,7 @@ let register_str reg = function
         | XMM14 -> "%xmm14"
         | XMM15 -> "%xmm15"
 
-        | RAX | RCX | RDX | RDI | RSI | RSP | R8 | R9 | R10 | R11 -> failwith "Cannot use general register with double."
+        | RAX | RCX | RDX | RDI | RSI | RBP | RSP | R8 | R9 | R10 | R11 -> failwith "Cannot use general register with double."
     )
 
 let p ?(packed=false) t = match t with
@@ -198,15 +208,16 @@ let operand_str asm_type oper externalNames =
         | Reg reg -> register_str reg asm_type
         | Pseudo id -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id
         | Data id -> (if Environment.setMem id externalNames then id^"@PLT" else id) ^ "(%rip)"
-        | Stack num -> (Int64.to_string num)^"(%rbp)"
+        | Memory (reg, num) -> (if num = 0L then "" else (Int64.to_string num))^"("^(register_str reg QuadWord)^")"
 
 let instruction_str inst externalNames =
     let en = externalNames in
-    (match inst with Label _ -> "" | _ -> "\t") ^ (*ugly, but outliers do exist in simpler models*)
+    (match inst with Label _ -> "" | _ -> "\t") ^
     (match inst with
         | Mov (typ, s, d) -> "mov"^(p typ)^"\t" ^ (operand_str typ s en) ^ ", " ^ (operand_str typ d en)
         | Movsx ((typ_s, s), (typ_d, d)) -> "movs"^(p typ_s)^(p typ_d)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
         | Movzx ((typ_s, s), (typ_d, d)) -> "movz"^(p typ_s)^(p typ_d)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
+        | Lea (s, d) -> "leaq\t" ^ (operand_str QuadWord s en) ^ ", " ^ (operand_str QuadWord d en)
         | Cvttsx2si ((typ_s, s), (typ_d, d)) -> "cvtt"^(p typ_s)^"2si"^(p typ_d)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
         | Cvtsi2sx ((typ_s, s), (typ_d, d)) -> "cvtsi2"^(p typ_d)^(p typ_s)^"\t" ^ (operand_str typ_s s en) ^ ", " ^ (operand_str typ_d d en)
         | Unary (typ, unop, d) -> (unop_str unop typ) ^ (operand_str typ d en)

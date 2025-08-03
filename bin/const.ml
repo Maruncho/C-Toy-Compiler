@@ -51,12 +51,18 @@ let isZero = function
     | I n -> (Z.compare Z.zero n) = 0
     | D n -> ((Float.compare Float.zero n) = 0) && (not (Float.sign_bit n)) (* is not -0.0 *)
 
+let isIntegerZero = function
+    | I n -> (Z.compare Z.zero n) = 0
+    | D _ -> false
+
 let truncWrapper num typ = match typ with
     | Ast.Long
     | Ast.ULong
     | Ast.Int
     | Ast.UInt -> (match num with I num -> I (trunc num typ) | D _ -> failwith "Fix your cringe logic.")
     | Ast.Double -> num
+    | Ast.Ptr _ -> num (*failwith "Impossible ptr in const.ml"*)
+    | Ast.FunType _ -> failwith "Impossible func in const.ml"
 
 
 let assert_fit num typ =
@@ -74,6 +80,8 @@ let assert_fit num typ =
         | Ast.Int -> Z.fits_int32_unsigned integer || Z.fits_int32 integer, "int"
         | Ast.UInt -> Z.fits_int32_unsigned integer || Z.fits_int32 integer, "uint"
         | Ast.Double -> true, "double"
+        | Ast.Ptr _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
+        | Ast.FunType _ -> failwith "Impossible func in const.ml"
     in if not r then failwith ("DEBUG ASSERT: Number " ^ (Z.to_string integer) ^ " doesn't fit in " ^ typ_str ^ ".")
     else num
 
@@ -89,7 +97,7 @@ let parseConstExpr typed_expr =
 
             | (_, Ast.Cast(new_type, ((old_type, _) as typed_expr))) ->
                 let parsed = parse typed_expr seen in
-                if old_type = new_type then parsed else
+                if old_type = new_type || Ast.isPointer new_type then parsed else
 
                 if (Ast.size new_type) = (Ast.size old_type) then
                     parsed
@@ -111,6 +119,9 @@ let parseConstExpr typed_expr =
                                     | D num -> if Float.compare num Float.zero = 0 then I Z.zero else I Z.one)
                     | Tac.Incr | Tac.Decr -> raise (ConstError "Increment/Decrement is not a constant expression operator")
                 end in truncWrapper result typ
+
+            | (_, Ast.Dereference _) -> raise (ConstError "Cannot use dereference operator in constant expressions.")
+            | (_, Ast.AddressOf _) -> raise (ConstError "Cannot use addressOf operator in constant expressions.")
 
             | (_, Ast.BinarySp (Ast.LogAnd, (left, _), right)) ->
                 let toBool num = begin match num with

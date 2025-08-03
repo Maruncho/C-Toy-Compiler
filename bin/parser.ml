@@ -91,6 +91,17 @@ let parse tokens =
         | Ast.Rshift -> true
         | _ -> false
 
+    in let isNotPointerable = function
+        | Ast.Mul
+        | Ast.Div
+        | Ast.Mod
+        | Ast.And
+        | Ast.Or
+        | Ast.Xor
+        | Ast.Lshift
+        | Ast.Rshift -> true
+        | _ -> false
+
     in let isAssign = function
         | 2 -> true
         | _ -> false
@@ -103,9 +114,10 @@ let parse tokens =
         | 11 -> true
         | _ -> false
 
-    in let isVar = function
+    in let isLvalue = function
         | (_, Ast.Var (_, Ast.StaticVariable _)) -> true
         | (_, Ast.Var (_, Ast.AutoVariable _)) -> true
+        | (_, Ast.Dereference _) -> true
         | _ -> false
 
     in let isTernary = function
@@ -171,6 +183,10 @@ let parse tokens =
         | L.UINT64_LIT _ as tok -> parseLiteral tok
         | _ as t -> raise (ParserError ("Expected constant expression, but got " ^ (L.string_of_token t)))
 
+    in let is_nullptr_constant expr =
+        try (Const.parseConstExpr expr) |> Const.isZero
+        with _ -> false
+
     in let get_common_type t1 t2 =
         if t1 = t2 then
             t1
@@ -184,16 +200,48 @@ let parse tokens =
         else
             t2
 
-    in let convert_to ((old_type, _) as typed_expr) new_type =
+    in let get_common_ptr_type e1 e2 = 
+    let t1, t2 = typ e1, typ e2 in
+    (*let () = print_string (Ast.string_data_type t1 ^ "->" ^ (Ast.string_data_type t2) ^ "\n") in*)
+    if t1 = t2 then
+        t2
+    else if Ast.isIntegral t1 && is_nullptr_constant e1 then
+        t2
+    else if Ast.isIntegral t2 && is_nullptr_constant e2 then
+        t1
+    else
+        raise (ParserError "Expressions have incompatible types.")
+
+    in let explicit_convert_to ((old_type, _) as typed_expr) new_type =
         if old_type = new_type then typed_expr
+        else if (Ast.isFloatingPoint old_type) && (Ast.isPointer new_type) then
+            raise (ParserError "Cannot convert a double to a pointer.")
+        else if (Ast.isPointer old_type) && (Ast.isFloatingPoint new_type) then
+            raise (ParserError "Cannot convert a pointer to a double.")
         else (new_type, Ast.Cast (new_type, typed_expr))
+
+    in let implicit_convert_to ((old_type, _) as typed_expr) new_type =
+        if (Ast.isPointer old_type) && (Ast.isPointer new_type) && new_type <> old_type then
+            raise (ParserError "Cannot implicitly convert from one pointer type to another.")
+        else if (Ast.isPointer old_type) && (not (Ast.isPointer new_type)) then
+            raise (ParserError "Cannot implicitly convert a pointer to a non-pointer.")
+        else if (not (Ast.isPointer old_type)) && (Ast.isPointer new_type) then(
+            if (Ast.isIntegral old_type) then(
+                if (is_nullptr_constant typed_expr) then
+                    explicit_convert_to typed_expr new_type
+                else
+                    raise (ParserError "Cannot implicitly convert an integer to a pointer."))
+            else
+            raise (ParserError "Cannot implicitly convert a non-pointer to a pointer."))
+        else
+            explicit_convert_to typed_expr new_type
 
     (*in let convert_lit_to lit new_type = match lit, new_type with*)
     (*    | Ast.Int32 _, Ast.Int -> lit*)
     (*    | Ast.Int64 _, Ast.Long -> lit*)
     (*    | Ast.Int32 num, Ast.Long -> Ast.Int64 (Int64.of_int32 num)*)
     (*    | Ast.Int64 num, Ast.Int -> Ast.Int32 ((Z.signed_extract (Z.of_int64 num) 0 32) |> Z.to_int32)*)
-
+ 
     in let rec parse_block_items env lvl fn_return_type = match nextToken() with
         | L.EOF -> raise (ParserError "Unmatched left brace")
         | L.RBRACE -> let _ = eatToken() in []
@@ -211,7 +259,7 @@ let parse tokens =
     and parse_for_init env lvl = match nextToken() with
         | L.SEMICOLON -> let _ = eatToken() in None, env
         | t when isDeclForInit t ->
-            let [@warning "-8"] (Ast.VarDecl item, env') = parse_var_decl env lvl in (*suppress FunDecl unmatched warning*)
+            let [@warning "-8"] (Ast.VarDecl item, env') = parse_decl ~forInit:true env lvl in (*suppress FunDecl unmatched warning*)
             (Some (Ast.InitDecl (item, flushPostfix())), env')
 
         | _ -> try (
@@ -260,6 +308,8 @@ let parse tokens =
                     | Ast.Long -> Ast.Int64 (Z.to_int64 num)
                     | Ast.ULong -> Ast.UInt64 (Z.to_int64_unsigned num)
                     | Ast.Double -> Ast.Float64 numFloat
+                    | Ast.Ptr _ -> raise (ParserError "Cannot use pointer types in cases.")
+                    | Ast.FunType _ -> raise (ParserError "Cannot use functions in cases.")
                 end in
                 ([(lit, lbl)], Ast.Case (lit, lbl))
 
@@ -287,27 +337,6 @@ let parse tokens =
             | stmt -> [], stmt
 
         in let (cases,stmt) = parseStmt body in (cases, stmt, !default)
-
-    and parse_params env lvl =
-        let rec inner params env = match nextToken() with
-            | x when isDecl x ->
-                let typ = parse_type_spec None in
-                let id = expectIdentifier() in
-
-                if Environment.isInScope id lvl env then raise (ParserError (id ^ " is already a parameter"))
-                else
-
-                let newId = newVar id in
-                let newEnv = Environment.add id (Environment.Var (newId, typ), lvl) env in
-
-                if nextToken() = L.COMMA
-                then let _ = eatToken() in inner ((typ, newId) :: params) newEnv
-                else (List.rev ((typ, newId) :: params), newEnv)
-            | t -> raise (ParserError ("Expected parameter, but got " ^ (L.string_of_token t)))
-        in
-        match nextToken() with
-            | L.VOID -> let _ = eatToken() in ([], env)
-            | _ -> inner [] env
 
     and parse_type_spec list_opt =
         let rec iter() = match nextToken() with
@@ -356,12 +385,7 @@ let parse tokens =
         in let (typ, storage) = iter [] None in
         (parse_type_spec (Some typ), storage)
 
-    and parse_var_decl ?(common=None) env lvl =
-        let (typ, storage, id) = match common with
-        | None ->
-            let (typ, storage) = parse_specifiers() in 
-            (typ, storage, expectIdentifier())
-        | Some common -> common in
+    and parse_var_decl (typ, storage, id) env lvl =
 
         let newId = newVar id in
 
@@ -370,7 +394,7 @@ let parse tokens =
 
         let (typed_expr, expr) = match nextToken() with
             | L.ASSIGN -> let _ = eatToken() in
-                          let (_, expr) as typed_expr = convert_to (parse_expr initEnv lvl) typ in
+                          let (_, expr) as typed_expr = implicit_convert_to (parse_expr initEnv lvl) typ in
                           (Some typed_expr, Some expr)
             | _ -> (None, None)
 
@@ -381,64 +405,63 @@ let parse tokens =
         in let () = expect L.SEMICOLON
         in (Ast.VarDecl (newId, expr, typ, storage), newEnv)
 
-    and parse_fun_decl ?(common=None) env lvl =
-        let (return_typ, storage, id) = match common with
-        | None ->
-            let (typ, storage) = parse_specifiers() in
-            (typ, storage, expectIdentifier())
-        | Some common -> common in
+    and parse_fun_decl (ret_type, (param_names, param_types), storage, id) env lvl =
 
         let storage = match storage with None -> Ast.Extern | Some s -> s in
 
         (* Parse parameters *)
         let tempEnv = Environment.add id
-            (Environment.Func (id, [], return_typ, false), (*dummy function so we can know later whether it was shadowed by a paramter*)
+            (Environment.Func (id, [], ret_type, false), (*dummy function so we can know later whether it was shadowed by a paramter*)
              lvl)
             env in
 
-        let () = expect L.LPAREN in
-        let (params, paramsEnv) = parse_params tempEnv (lvl+1) in
-        let paramTypes = fst (List.split params) in
-        let () = expect L.RPAREN in
+        let paramsEnv, param_names = List.fold_left (fun (env, newNames) (id, typ) -> (
+            if Environment.isInScope id (lvl+1) env then raise (ParserError (id ^ " is already a parameter"))
+            else
+
+            let newId = newVar id in
+            (Environment.add id (Environment.Var (newId, typ), lvl+1) env, newNames @ [newId])
+        )) (tempEnv, []) (List.combine param_names param_types) in
         (*-------------------*)
 
         (* Parse body*)
         let bodyEnv = match Option.get (Environment.find_opt id paramsEnv) with
             | (Environment.Func _, _) -> 
                 Environment.add id
-                ((Environment.Func (id, paramTypes, return_typ, true(*doesn't matter. Definitions are not allowed in body.*))),
+                ((Environment.Func (id, param_types, ret_type, true(*doesn't matter. Definitions are not allowed in body.*))),
                  lvl)
                 paramsEnv
             | _ -> paramsEnv (* A parameter shadowed the function declaration *)
 
         in let body = match nextToken() with
-            | L.LBRACE -> let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1) return_typ)
+            | L.LBRACE -> let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1) ret_type)
             | _ -> let () = expect L.SEMICOLON in None
         in
         (*-----------------------*)
 
 
-        let (newEnv, gEnv) = try Environment.tryAddFunction env !globalEnv lvl storage id paramTypes return_typ body
+        let (newEnv, gEnv) = try Environment.tryAddFunction env !globalEnv lvl storage id param_types ret_type body
             with Environment.EnvironmentError s -> raise (ParserError s)
         in let () = globalEnv := gEnv
 
-        (*define the name globally*)
-        in (Ast.FunDecl (id, params, body, return_typ, storage), newEnv)
+        in (Ast.FunDecl (id, List.combine param_types param_names, body, ret_type, storage), newEnv)
 
-    and parse_decl env lvl = 
+    and parse_decl ?(forInit=false) env lvl = 
         let (typ, storage) = parse_specifiers() in
-        let id = expectIdentifier() in
-
-        match nextToken() with
-            | L.LPAREN -> parse_fun_decl ~common:(Some (typ, storage, id)) env lvl
-            | _ -> parse_var_decl ~common:(Some (typ, storage, id)) env lvl
-
+        let (id, typ, maybe_params) = try ParserDeclarator.process_declarator tokens typ (fun () -> parse_type_spec None)
+            with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+        match typ with
+            | Ast.FunType (param_types, ret_type) ->
+                if forInit then raise (ParserError "Cannot declare function in a for initilalization clause") else
+                parse_fun_decl (ret_type, (maybe_params, param_types), storage, id) env lvl
+            | _ ->
+                parse_var_decl (typ, storage, id) env lvl
 
     and parse_stmt env lvl fn_return_type =
         let result = match nextToken() with
         | L.RETURN -> let _ = eatToken() in
                       let typed_expr = parse_expr env lvl in
-                      let r = convert_to typed_expr fn_return_type in
+                      let r = implicit_convert_to typed_expr fn_return_type in
                       let () = expect L.SEMICOLON in [Ast.Return r]
         | L.SEMICOLON -> let () = expect L.SEMICOLON in [Ast.Null]
         | L.IF ->
@@ -538,9 +561,7 @@ let parse tokens =
                 if count <= 0 then raise (ParserError ("Argument count is less than " ^ original)) else
                 let [@warning "-8"] param_typ :: rest = paramTypes in
                 let arg = parse_expr env lvl in
-                (*let arg_typ = typ arg in*)
-                (*if arg_typ <> param_typ then raise (ParserError ("Argument "^(string_of_int (1+originalCount-count))^": Expected "^(Ast.string_data_type param_typ)^", but got "^(Ast.string_data_type arg_typ)^".")) else*)
-                let arg = convert_to arg param_typ in
+                let arg = implicit_convert_to arg param_typ in
                 begin match nextToken() with
                     | L.COMMA -> let _ = eatToken() in arg :: (iter rest (count-1) false)
                     | _ -> arg :: (iter rest (count-1) true)
@@ -573,12 +594,12 @@ let parse tokens =
         let primary = parse_primary env lvl in
         let rec iter peekToken left = match peekToken with
             | L.INCREMENT ->
-                if not (isVar left) then raise (ParserError "Suffix Increment operator rhs is not an lvalue") else
+                if not (isLvalue left) then raise (ParserError "Suffix Increment operator rhs is not an lvalue") else
                 let _ = eatToken() in
                 let () = schedulePostfixIncr left in
                 iter (nextToken()) (typ left, Ast.Unary (Ast.Rvalue, left))
             | L.DECREMENT ->
-                if not (isVar left) then raise (ParserError "Suffix Increment operator rhs is not an lvalue") else
+                if not (isLvalue left) then raise (ParserError "Suffix Increment operator rhs is not an lvalue") else
                 let _ = eatToken() in
                 let () = schedulePostfixDecr left in
                 iter (nextToken()) (typ left, Ast.Unary (Ast.Rvalue, left))
@@ -600,33 +621,55 @@ let parse tokens =
     and parse_unary env lvl = match nextToken() with
         | L.PLUS -> let _ = eatToken() in
                     let typed_expr = parse_unary env lvl in
+                    if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't unary plus a pointer") else
                     (typ typed_expr, Ast.Unary (Ast.Rvalue, typed_expr))
         | L.MINUS -> let _ = eatToken() in
                      let typed_expr = parse_unary env lvl in
+                     if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't negate a pointer") else
                      (typ typed_expr, Ast.Unary (Ast.Negate, typed_expr))
         | L.COMPLEMENT -> let _ = eatToken() in
                           let typed_expr = parse_unary env lvl in
                           if Ast.isFloatingPoint (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a floating point expression") else
+                          if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a pointer") else
                           (typ typed_expr, Ast.Unary (Ast.Complement, typed_expr))
         | L.BANG -> let _ = eatToken() in
                     let typed_expr = parse_unary env lvl in
                     (Ast.Int, Ast.Unary (Ast.LogNot, typed_expr))
+        | L.ASTERISK -> let _ = eatToken() in
+                        let typed_expr = parse_unary env lvl in
+                        if (Ast.isPointer (typ typed_expr)) then
+                            (Ast.getPointerType (typ typed_expr), Ast.Dereference typed_expr)
+                        else
+                            raise (ParserError "Cannot dereference a non-pointer.")
+        | L.AMPERSAND -> let _ = eatToken() in
+                        let typed_expr = parse_unary env lvl in
+                        begin match typed_expr with
+                            | (_, Ast.Dereference t_expr) ->
+                                (typ t_expr, Ast.Unary (Ast.Rvalue, t_expr))
+                            | (typ, _) ->
+                                if (isLvalue typed_expr) then
+                                    (Ast.Ptr typ, Ast.AddressOf typed_expr)
+                                else
+                                    raise (ParserError "Cannot addressOf a non-lvalue.")
+                        end
         | L.INCREMENT ->
             let _ = eatToken() in
             let right = parse_unary env lvl in
-            let () = begin match right with (_, Ast.Var _) -> () | _ -> raise (ParserError "Prefix Increment operator rhs is not an lvalue") end in
+            if not (isLvalue right) then raise (ParserError "Expected an lvalue") else
             (typ right, Ast.Unary (Ast.Increment, right))
         | L.DECREMENT -> 
             let _ = eatToken() in
             let right = parse_unary env lvl in
-            let () = begin match right with (_, Ast.Var _) -> () | _ -> raise (ParserError "Prefix Decrement operator rhs is not an lvalue") end in
+            if not (isLvalue right) then raise (ParserError "Expected an lvalue") else
             (typ right, Ast.Unary (Ast.Decrement, right))
         | L.LPAREN when isTypeSpec (nextNextToken()) ->
             let _ = eatToken() in
             let typ = parse_type_spec None in
+            let typ = ParserDeclarator.process_abstract_declarator tokens typ in
             let () = expect L.RPAREN in
             let src = parse_unary env lvl in
-            (typ, Ast.Cast (typ, src))
+            explicit_convert_to src typ
+            (*(typ, Ast.Cast (typ, src))*)
 
         | _ -> try parse_postfix env lvl
                with ParserError e -> raise (ParserError ("Expected unary\n"^e))
@@ -639,24 +682,28 @@ let parse tokens =
                 if isAssign p then
                     let op = eatToken() |> parseOp in
 
-                    let () = match left with (_, Ast.Var _) -> () | _ -> raise (ParserError "Expected an lvalue") in
+                    if not (isLvalue left) then raise (ParserError "Expected an lvalue") else
                     let right = parse_expr ~min_prec:p env lvl in
                     let left_type = typ left in
-                    let cmn_type = get_common_type (typ left) (typ right) in
-                    let new_left = convert_to left cmn_type in
-                    let l_type_right = convert_to right left_type in
-                    let cmn_type_right = convert_to right cmn_type in
+                    let cmn_type = if Ast.isPointer (typ left) || Ast.isPointer (typ right)
+                        then get_common_ptr_type left right
+                        else get_common_type (typ left) (typ right) in
+                    (*let new_left = explicit_convert_to left cmn_type in*)
+                    let l_type_right = explicit_convert_to right left_type in
+                    let cmn_type_right = explicit_convert_to right cmn_type in
                     match op with
                         | Ast.Assign -> iter (nextToken()) (left_type, (Ast.Assignment (left, l_type_right)))
                         | Ast.Lshift | Ast.Rshift ->
-                            if (Ast.isFloatingPoint cmn_type) then raise (ParserError "Can't take the modulo of a floating point expression") else
-                             iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, l_type_right))
-                        | _ when left_type <> cmn_type ->
-                            if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
-                            iter (nextToken()) (left_type, Ast.Assignment (left, (left_type, Ast.Cast (left_type, (cmn_type, (Ast.Binary (op, new_left, cmn_type_right)))))))
+                            if (Ast.isFloatingPoint cmn_type) then raise (ParserError "Can't take the shift of a floating point expression") else
+                            if (Ast.isPointer cmn_type) then raise (ParserError "Can't shift pointers") else
+                            iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, l_type_right, None))
                         | _ ->
                             if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
-                            iter (nextToken()) (left_type, (Ast.BinaryAssign (op, left, l_type_right)))
+                            if (Ast.isPointer cmn_type && isNotPointerable op) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                            if left_type <> cmn_type then
+                                iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, cmn_type_right, Some cmn_type))
+                            else
+                                iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, l_type_right, None))
 
 
                 else if isTernary p then
@@ -666,9 +713,11 @@ let parse tokens =
                     let () = expect L.COLON in
                     let el = parse_expr ~min_prec:p env lvl in
 
-                    let cmn_type = get_common_type (typ th) (typ el) in
-                    let new_th = (cmn_type, Ast.Unary (Ast.Rvalue, convert_to th cmn_type)) in
-                    let new_el = (cmn_type, Ast.Unary (Ast.Rvalue, convert_to el cmn_type)) in
+                    let cmn_type = if Ast.isPointer (typ th) || Ast.isPointer (typ el)
+                        then get_common_ptr_type th el
+                        else get_common_type (typ th) (typ el) in
+                    let new_th = (cmn_type, Ast.Unary (Ast.Rvalue, explicit_convert_to th cmn_type)) in
+                    let new_el = (cmn_type, Ast.Unary (Ast.Rvalue, explicit_convert_to el cmn_type)) in
 
                     let postfix = flushPostfix() in
                     iter (nextToken()) (cmn_type, (Ast.Ternary ((left, postfix), new_th, new_el)))
@@ -677,17 +726,15 @@ let parse tokens =
                     let op = eatToken() |> parseOpSp in
                     let between = flushPostfix() in
                     let right = parse_expr ~min_prec:(p+1) env lvl in
-                    let cmn_type = get_common_type (typ left) (typ right) in
-                    let new_left = convert_to left cmn_type in
-                    let new_right = convert_to right cmn_type in
-                    iter (nextToken()) (Ast.Int, (Ast.BinarySp (op, (new_left, between), new_right)))
+                    iter (nextToken()) (Ast.Int, (Ast.BinarySp (op, (left, between), right)))
 
                 else if isShift p then
                     let op = eatToken() |> parseOp in
                     let typ_left = (typ left) in
                     let right = parse_expr ~min_prec:(p+1) env lvl in
                     if (typ right) = Ast.Double || typ_left = Ast.Double then raise (ParserError "Can't use double as rhs of a shift operator.") else
-                    let new_right = convert_to right typ_left
+                     if (Ast.isPointer (typ right) || Ast.isPointer typ_left) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                    let new_right = explicit_convert_to right typ_left
 
                     in iter (nextToken()) (typ_left, Ast.Binary (op, left, new_right))
 
@@ -695,10 +742,13 @@ let parse tokens =
                     let op = eatToken() |> parseOp in
 
                     let right = parse_expr ~min_prec:(p+1) env lvl in
-                    let cmn_type = get_common_type (typ left) (typ right) in
+                    let cmn_type = if Ast.isPointer (typ left) || Ast.isPointer (typ right)
+                        then get_common_ptr_type left right
+                        else get_common_type (typ left) (typ right) in
                     if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
-                    let new_left = convert_to left cmn_type in
-                    let new_right = convert_to right cmn_type in
+                    if (Ast.isPointer cmn_type && isNotPointerable op) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                    let new_left = explicit_convert_to left cmn_type in
+                    let new_right = explicit_convert_to right cmn_type in
                     let return = if isBoolean p then
                         (Ast.Int, Ast.Binary (op, new_left, new_right))
                     else

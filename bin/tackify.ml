@@ -3,6 +3,9 @@ module Tac = Tacky
 
 exception TackyError of string
 
+type lval = PlainOperand of Tac.operand
+          | DereferencedPointer of Tac.operand
+
 let parseUnaryOp = function
         | Ast.Negate -> Tac.Negate
         | Ast.Complement -> Tac.Complement
@@ -34,6 +37,27 @@ let const_to_tacky c typ = match c with
     | Const.I n -> Tac.I (n, typ)
     | Const.D n -> Tac.D n
 
+let unpointerOnce = function
+    | Tac.Var (i, Tac.Ptr t) -> Tac.Var (i, t)
+    | Tac.StaticVar (i, Tac.Ptr t) -> Tac.StaticVar (i, t)
+    | _ -> failwith "Don't use unpointerOnce() with non-pointer"
+
+let pointerOnce = function
+    | Tac.Var (i, t) -> Tac.Var (i, Tac.Ptr t)
+    | Tac.StaticVar (i, t) -> Tac.StaticVar (i, Tac.Ptr t)
+    | _ -> failwith "Don't use pointerOnce() with non-pointer"
+
+let makeLongIntoPointer ptr = function
+    | Tac.Var (i, Tac.Int64 _) -> Tac.Var (i, ptr)
+    | Tac.StaticVar (i, Tac.Int64 _) -> Tac.StaticVar (i, ptr)
+    | Tac.Constant (I (n, Tac.Int64 _)) -> Tac.Constant (I (n, ptr))
+    | _ -> failwith "Don't use makeLongIntoPointer with non-long integers"
+
+let makePointerIntoLong sign = function
+    | Tac.Var (i, Tac.Ptr _) -> Tac.Var (i, Tac.Int64 sign)
+    | Tac.StaticVar (i, Tac.Ptr _) -> Tac.StaticVar (i, Tac.Int64 sign)
+    | _ -> failwith "Don't use makePointerIntoULong with non-pointers"
+
 let tackify ast globalEnv = 
     let ( #: ) (h: 'a) (t: 'a list ref) = t := (h :: (!t)) in
     let instrs : Tac.instruction list ref = ref [] in
@@ -48,24 +72,43 @@ let tackify ast globalEnv =
             | Ast.Expression (typ, Ast.Unary (Ast.Decrement, (_, Ast.Var (old, _)))) -> ((old, Temp.newTemp()), (parseType typ, false)) :: lst
             | _ -> lst
         )) [] postfix) |> List.split
+        in let derefsToVars = List.fold_left (fun lst stmt -> (match stmt with
+            | Ast.Expression (typ, Ast.Unary (Ast.Increment, (_, Ast.Dereference _ as deref))) ->
+                (deref, (typ, Ast.Var (Temp.newTemp(), Ast.AutoVariable typ))) :: lst
+            | Ast.Expression (typ, Ast.Unary (Ast.Decrement, (_, Ast.Dereference _ as deref))) ->
+                (deref, (typ, Ast.Var (Temp.newTemp(), Ast.AutoVariable typ))) :: lst
+            | _ -> lst
+        )) [] postfix
         in let rec walkExpr expr = match expr with
             | typ, Ast.Var (old, t) -> begin match List.assoc_opt old oldToNewTemps with
                 | None -> typ, Ast.Var (old, t)
                 | Some neww -> typ, Ast.Var (neww, Ast.AutoVariable typ)
             end
             | typ, Ast.Unary (op, expr) -> typ, Ast.Unary (op, walkExpr expr)
+            | typ, Ast.Dereference sub -> begin match List.assoc_opt expr derefsToVars with
+                | None -> typ, Ast.Dereference (walkExpr sub)
+                | Some neww -> neww
+            end
+            | typ, Ast.AddressOf (expr) -> typ, Ast.AddressOf (walkExpr expr)
             | typ, Ast.Binary (op, expr1, expr2) -> typ, Ast.Binary (op, walkExpr expr1, walkExpr expr2)
             | typ, Ast.BinarySp (op, expr1_sp, expr2) -> typ, Ast.BinarySp (op, expr1_sp, walkExpr expr2)
-            | typ, Ast.BinaryAssign (op, var, expr) -> typ, Ast.BinaryAssign (op, walkExpr var, walkExpr expr)
+            | typ, Ast.BinaryAssign (op, var, expr, opt) -> typ, Ast.BinaryAssign (op, walkExpr var, walkExpr expr, opt)
             | typ, Ast.Assignment (var, expr) -> typ, Ast.Assignment (walkExpr var, walkExpr expr)
             | typ, Ast.Ternary (cond_sp, th, el) -> typ, Ast.Ternary (cond_sp, walkExpr th, walkExpr el)
             | typ, Ast.Cast (new_typ, expr) -> typ, Ast.Cast (new_typ, walkExpr expr)
             | typ, Ast.Call (id, args) -> typ, Ast.Call (id, List.map walkExpr args)
             | typ, Ast.Literal lit -> typ, Ast.Literal lit
 
-        in let () = List.iter (fun ((x,y),(typ, static)) ->
-            let src = if static then Tac.StaticVar (x, typ) else Tac.Var (x, typ) in
-            (Tac.Copy (src, Tac.Var (y, typ))) #: instrs) (List.combine oldToNewTemps theirTypeAndStatic)
+        in let () = List.iter (fun ((old,neww),(typ, static)) ->
+            let old = if static then Tac.StaticVar (old, typ) else Tac.Var (old, typ) in
+            (Tac.Copy (old, Tac.Var (neww, typ))) #: instrs) (List.combine oldToNewTemps theirTypeAndStatic)
+
+        in let () = List.iter (fun (deref, var) ->
+            let var = parseExpr_lval_convert var in
+            let deref = parseExpr_lval_convert deref in
+            (Tac.Copy (deref, var)) #: instrs
+        ) derefsToVars
+
         in let () = List.iter (fun x -> parseStmt x) postfix
         in walkExpr cond
 
@@ -91,88 +134,153 @@ let tackify ast globalEnv =
         | Ast.UInt -> Tac.Int32 false
         | Ast.ULong -> Tac.Int64 false
         | Ast.Double -> Tac.Float64
+        | Ast.Ptr x -> Tac.Ptr (parseType x)
+        | Ast.FunType _ -> failwith "parseType should not handle funtype"
 
     and flipIsSigned =
         let flipType = function
             | Tac.Int32 s -> Tac.Int32 (not s)
             | Tac.Int64 s -> Tac.Int64 (not s)
             | Tac.Float64 -> failwith "Cannot call flipIsSigned with float"
+            | Tac.Ptr _ -> failwith "Cannot call flipIsSigned with ptr"
         in function
             | Tac.Constant Tac.I (n, t) -> Tac.Constant (Tac.I (n, flipType t))
             | Tac.Var (n, t) -> Tac.Var (n, flipType t)
             | Tac.StaticVar (n, t) -> Tac.StaticVar (n, flipType t)
             | Tac.Constant Tac.D _ -> failwith "Cannot call flipIsSigned with float"
 
+    and cast old_type new_type tacExpr =
+        let () = print_string((Ast.string_data_type old_type) ^ " " ^ (Ast.string_data_type new_type) ^ " " ^ (Tac.typ_str (Tac.operand_type tacExpr)) ^ " \n") in
+        if old_type = new_type then tacExpr else
+
+        if (Ast.isPointer old_type) && (Ast.isPointer new_type) then
+            tacExpr
+        else if (Ast.isPointer new_type) then
+            if Ast.size old_type = 8 then (makeLongIntoPointer (parseType new_type) tacExpr) else
+            let dst = Tac.Var (Temp.newTemp(), parseType new_type) in
+            let () = ((Tac.ZeroExtend (tacExpr, dst)) #: instrs) in
+            dst
+        else if (Ast.isPointer old_type) then
+            if Ast.size new_type = 8 then (makePointerIntoLong (Ast.signed new_type) tacExpr) else
+            let dst = Tac.Var (Temp.newTemp(), parseType new_type) in
+            let () = ((Tac.Truncate (tacExpr, dst)) #: instrs) in
+            dst
+
+        else if (Ast.size new_type) = (Ast.size old_type) then
+            (flipIsSigned tacExpr)
+
+        else
+            let dst = Tac.Var (Temp.newTemp(), parseType new_type) in
+
+            if (Ast.isFloatingPoint new_type) && (Ast.isFloatingPoint old_type) then failwith "float32 not implemented" else
+
+            let () = if (Ast.isFloatingPoint new_type) then
+            begin match old_type with
+                | Ast.Int
+                | Ast.Long -> (Tac.IntToFloat (tacExpr, dst)) #: instrs
+                | Ast.UInt
+                | Ast.ULong -> (Tac.UIntToFloat (tacExpr, dst)) #: instrs
+                | Ast.Double -> failwith "Impossible."
+                | Ast.FunType _ -> failwith "Impossible."
+                | Ast.Ptr _ -> failwith "Impossible."
+            end
+            else if (Ast.isFloatingPoint old_type) then
+            begin match new_type with
+                | Ast.Int
+                | Ast.Long -> (Tac.FloatToInt (tacExpr, dst)) #: instrs
+                | Ast.UInt
+                | Ast.ULong -> (Tac.FloatToUInt (tacExpr, dst)) #: instrs
+                | Ast.Double -> failwith "Impossible."
+                | Ast.FunType _ -> failwith "Impossible."
+                | Ast.Ptr _ -> failwith "Impossible."
+            end
+
+            else if (Ast.size new_type) < (Ast.size old_type) then
+                ((Tac.Truncate (tacExpr, dst)) #: instrs)
+            else if (Ast.signed old_type) then
+                ((Tac.SignExtend (tacExpr, dst)) #: instrs)
+            else
+                ((Tac.ZeroExtend (tacExpr, dst)) #: instrs)
+            in dst
+
+
+    and parseExpr_lval_convert (expr:Ast.typed_expr) =
+        let r = parseExpr expr in
+        match r with
+            | PlainOperand oper -> oper
+            | DereferencedPointer oper ->
+                let dst = Tac.Var (Temp.newTemp(), Tac.operand_type oper) in
+                let () = (Tac.Load (oper, dst)) #: instrs in
+                dst
+
     and parseExpr (expr:Ast.typed_expr) =
         match expr with
-            | _, Ast.Literal lit -> Tac.Constant (parseLiteral lit)
-            | typ, Ast.Var (id, Ast.AutoVariable _) -> Tac.Var (id, parseType typ)
-            | typ, Ast.Var (id, Ast.StaticVariable _) -> Tac.StaticVar (id, parseType typ)
+            | _, Ast.Literal lit -> PlainOperand (Tac.Constant (parseLiteral lit))
+            | typ, Ast.Var (id, Ast.AutoVariable _) -> PlainOperand (Tac.Var (id, parseType typ))
+            | typ, Ast.Var (id, Ast.StaticVariable _) -> PlainOperand (Tac.StaticVar (id, parseType typ))
             | _, Ast.Var (_, Ast.Function _) -> failwith "No support for function variables"
 
             | _, Ast.Cast (new_type, ((inner_type, _) as inner_expr)) ->
-                let result = parseExpr inner_expr in
-                (*let () = print_string((Ast.string_data_type inner_type) ^ " " ^ (Ast.string_data_type new_type) ^ " \n") in*)
-                if inner_type = new_type then result else
+                let result = parseExpr_lval_convert inner_expr in
+                PlainOperand (cast inner_type new_type result)
 
-                if (Ast.size new_type) = (Ast.size inner_type) then
-                    flipIsSigned result
-
-                else
-                    let dst = Tac.Var (Temp.newTemp(), parseType new_type) in
-
-                    if (Ast.isFloatingPoint new_type) && (Ast.isFloatingPoint inner_type) then failwith "float32 not implemented" else
-
-                    let () = if (Ast.isFloatingPoint new_type) then
-                    begin match inner_type with
-                        | Ast.Int
-                        | Ast.Long -> (Tac.IntToFloat (result, dst)) #: instrs
-                        | Ast.UInt
-                        | Ast.ULong -> (Tac.UIntToFloat (result, dst)) #: instrs
-                        | Ast.Double -> failwith "Impossible."
-                    end
-                    else if (Ast.isFloatingPoint inner_type) then
-                    begin match new_type with
-                        | Ast.Int
-                        | Ast.Long -> (Tac.FloatToInt (result, dst)) #: instrs
-                        | Ast.UInt
-                        | Ast.ULong -> (Tac.FloatToUInt (result, dst)) #: instrs
-                        | Ast.Double -> failwith "Impossible."
-                    end
-
-                    else if (Ast.size new_type) < (Ast.size inner_type) then
-                        ((Tac.Truncate (result, dst)) #: instrs)
-                    else if (Ast.signed inner_type) then
-                        ((Tac.SignExtend (result, dst)) #: instrs)
-                    else
-                        ((Tac.ZeroExtend (result, dst)) #: instrs)
-                    in dst
-
-            | _, Ast.Unary (Ast.Increment, dst) ->
+            | typ, Ast.Unary (Ast.Increment, dst) ->
                 let dst = parseExpr dst in
-                let () = (Tac.Unary (Tac.Incr, dst, dst)) #: instrs in
-                dst
+                begin match dst with
+                    | PlainOperand oper ->
+                        let () = (Tac.Unary (Tac.Incr, oper, oper)) #: instrs in
+                        dst
+                    | DereferencedPointer oper ->
+                        let dst = Tac.Var (Temp.newTemp(), parseType typ) in
+                        let () = (Tac.Load (oper, dst)) #: instrs in
+                        let () = (Tac.Unary (Tac.Incr, dst, dst)) #: instrs in
+                        let () = (Tac.Store (dst, oper)) #: instrs in
+                        PlainOperand dst
+                end
 
-            | _, Ast.Unary (Ast.Decrement, dst) ->
+            | typ, Ast.Unary (Ast.Decrement, dst) ->
                 let dst = parseExpr dst in
-                let () = (Tac.Unary (Tac.Decr, dst, dst)) #: instrs in
-                dst
+                begin match dst with
+                    | PlainOperand oper ->
+                        let () = (Tac.Unary (Tac.Decr, oper, oper)) #: instrs in
+                        dst
+                    | DereferencedPointer oper ->
+                        let dst = Tac.Var (Temp.newTemp(), parseType typ) in
+                        let () = (Tac.Load (oper, dst)) #: instrs in
+                        let () = (Tac.Unary (Tac.Decr, dst, dst)) #: instrs in
+                        let () = (Tac.Store (dst, oper)) #: instrs in
+                        PlainOperand dst
+                end
 
             | _, Ast.Unary (Ast.Rvalue, src) -> parseExpr src
             | typ, Ast.Unary (op, expr) ->
-                let src = parseExpr expr in
+                let src = parseExpr_lval_convert expr in
                 let dst = Tac.Var (Temp.newTemp(), parseType typ) in
                 let op = parseUnaryOp op in
                 let () = (Tac.Unary (op, src, dst)) #: instrs in
-                dst
+                PlainOperand dst
+
+            | _, Ast.Dereference expr ->
+                DereferencedPointer (unpointerOnce (parseExpr_lval_convert expr))
+
+            | typ, Ast.AddressOf expr ->
+                let oper = parseExpr expr in
+                begin match oper with
+                    | PlainOperand oper ->
+                        let dst = Tac.Var (Temp.newTemp(), parseType typ) in
+                        let () = (Tac.GetAddress (oper, dst)) #: instrs in
+                        PlainOperand dst
+                    | DereferencedPointer oper ->
+                        PlainOperand oper
+                end
 
             | _, Ast.BinarySp (Ast.LogAnd, (left, between), right) ->
                 let false_lbl = Label.newLbl() in
                 let end_lbl = Label.newLbl() in
-                let left = parseExpr left in
+                let left = parseExpr_lval_convert left in
                 let () = (Tac.JumpIfZero (left, false_lbl)) #: instrs in
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
-                let right = parseExpr right in
+                let right = parseExpr_lval_convert right in
                 let () = (Tac.JumpIfZero (right, false_lbl)) #: instrs in
                 let result = Tac.Var (Temp.newTemp(), Tac.Int32 true) in
                 let () = (Tac.Copy (Tac.Constant (Tac.I (Z.one, Tac.Int32 true)), result)) #: instrs in
@@ -180,15 +288,15 @@ let tackify ast globalEnv =
                 let () = (Tac.Label false_lbl) #: instrs in
                 let () = (Tac.Copy (Tac.Constant (Tac.I (Z.zero, Tac.Int32 true)), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
-                result
+                PlainOperand result
 
             | _, Ast.BinarySp (Ast.LogOr, (left, between), right) ->
                 let true_lbl = Label.newLbl() in
                 let end_lbl = Label.newLbl() in
-                let left = parseExpr left in
+                let left = parseExpr_lval_convert left in
                 let () = (Tac.JumpIfNotZero (left, true_lbl)) #: instrs in
                 let () = List.iter (fun stmt -> parseStmt stmt) between in
-                let right = parseExpr right in
+                let right = parseExpr_lval_convert right in
                 let () = (Tac.JumpIfNotZero (right, true_lbl)) #: instrs in
                 let result = Tac.Var (Temp.newTemp(), Tac.Int32 true) in
                 let () = (Tac.Copy (Tac.Constant (Tac.I (Z.zero, Tac.Int32 true)), result)) #: instrs in
@@ -196,75 +304,110 @@ let tackify ast globalEnv =
                 let () = (Tac.Label true_lbl) #: instrs in
                 let () = (Tac.Copy (Tac.Constant (Tac.I (Z.one, Tac.Int32 true)), result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
-                result
+                PlainOperand result
 
             | _, Ast.BinarySp (Ast.Comma, _, _) -> failwith "TODO: Add Comma"
 
             | typ, Ast.Binary (op, left, right) ->
-                let src1 = parseExpr left in
-                let src2 = parseExpr right in
+                let src1 = parseExpr_lval_convert left in
+                let src2 = parseExpr_lval_convert right in
                 let dst = Tac.Var (Temp.newTemp(), parseType typ) in
                 let op = parseBinaryOp op in
                 let () = (Tac.Binary (op, src1, src2, dst)) #: instrs in
-                dst
+                PlainOperand dst
 
-            | _, Ast.BinaryAssign (op, dst, src) ->
-                let () = match dst with (_, Ast.Var _) -> () | _ -> failwith "BinaryAssign dst is not a var" in
-                let src = parseExpr src in
+            | typ, Ast.BinaryAssign (op, dst, src, rhs_type_opt) ->
+                (*let () = match dst with (_, Ast.Var _) -> () | _ -> failwith "BinaryAssign dst is not a var" in*)
+                let src = parseExpr_lval_convert src in
                 let dst = parseExpr dst in
                 let op = parseBinaryOp op in
-                let () = (Tac.Binary (op, dst, src, dst)) #: instrs in
-                dst
+                begin match dst with
+                    | PlainOperand oper -> (match rhs_type_opt with
+                        | None ->
+                            let () = (Tac.Binary (op, oper, src, oper)) #: instrs in
+                            dst
+                        | Some rhs_type ->
+                            let bin_lhs = cast typ rhs_type oper in
+                            let bin_var = Tac.Var (Temp.newTemp(), parseType rhs_type) in
+                            let () = (Tac.Binary (op, bin_lhs, src, bin_var)) #: instrs in
+                            let casted_back_rhs = cast rhs_type typ bin_var in
+                            let () = (Tac.Copy (casted_back_rhs, oper)) #: instrs in
+                            PlainOperand oper
+                    )
+                    | DereferencedPointer oper ->
+                        let dst = Tac.Var (Temp.newTemp(), parseType typ) in
+                        let () = (Tac.Load (oper, dst)) #: instrs in
+                        (match rhs_type_opt with
+                        | None ->
+                            let () = (Tac.Binary (op, dst, src, dst)) #: instrs in
+                            let () = (Tac.Store (dst, oper)) #: instrs in
+                            PlainOperand dst
+                        | Some rhs_type ->
+                            let bin_lhs = cast typ rhs_type dst in
+                            let bin_var = Tac.Var (Temp.newTemp(), parseType rhs_type) in
+                            let () = (Tac.Binary (op, bin_lhs, src, bin_var)) #: instrs in
+                            let casted_back_rhs = cast rhs_type typ bin_var in
+                            let () = (Tac.Store (casted_back_rhs, oper)) #: instrs in
+                            PlainOperand casted_back_rhs
+                        )
+                end
 
-            | typ, Ast.Assignment (left, right) ->
-                let dst = (match left with (_, Ast.Var (v, Ast.AutoVariable _)) -> Tac.Var (v, parseType typ)
-                                         | (_, Ast.Var (v, Ast.StaticVariable _)) -> Tac.StaticVar (v, parseType typ)
-                                         | _ -> failwith "lvalue of Assignment is not a variable") in
-                let src = parseExpr right in
-                let () = (Tac.Copy (src, dst)) #: instrs in
-                dst
+            | _, Ast.Assignment (left, right) ->
+                (*let dst = (match left with (_, Ast.Var (v, Ast.AutoVariable _)) -> Tac.Var (v, parseType typ)*)
+                (*                         | (_, Ast.Var (v, Ast.StaticVariable _)) -> Tac.StaticVar (v, parseType typ)*)
+                (*                         | _ -> failwith "lvalue of Assignment is not a variable") in*)
+                let src = parseExpr_lval_convert right in
+                let dst = parseExpr left in
+                begin match dst with
+                    | PlainOperand dst ->
+                        let () = (Tac.Copy (src, dst)) #: instrs in
+                        PlainOperand dst
+                    | DereferencedPointer dst ->
+                        let () = (Tac.Store (src, dst)) #: instrs in
+                        PlainOperand src
+                end
 
             | typ, Ast.Ternary ((cond, postfix), th, el) -> 
-                let cond = parseExpr cond in
+                let cond = parseExpr_lval_convert cond in
                 let else_lbl = Label.newLbl() in
                 let end_lbl = Label.newLbl() in
                 let result = Tac.Var(Temp.newTemp(), parseType typ) in
                 let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
                 let () = List.iter (fun stmt -> parseStmt stmt) postfix in
-                let th = parseExpr th in
+                let th = parseExpr_lval_convert th in
                 let () = (Tac.Copy (th, result)) #: instrs in
                 let () = (Tac.Jump end_lbl) #: instrs in
                 let () = (Tac.Label else_lbl) #: instrs in
                 let () = List.iter (fun stmt -> parseStmt stmt) postfix in
-                let el = parseExpr el in
+                let el = parseExpr_lval_convert el in
                 let () = (Tac.Copy (el, result)) #: instrs in
                 let () = (Tac.Label end_lbl) #: instrs in
-                result
+                PlainOperand result
 
             | typ, Ast.Call (name, args) ->
-                let args = List.map (fun arg -> parseExpr arg) args in
+                let args = List.map (fun arg -> parseExpr_lval_convert arg) args in
                 let dst = Tac.Var(Temp.newTemp(), parseType typ) in
                 let () = (Tac.Call (name, args, dst)) #: instrs in
-                dst
+                PlainOperand dst
 
 
     and parseStmt stmt =
         match stmt with
             | Ast.Return expr ->
-                let src = parseExpr expr in
+                let src = parseExpr_lval_convert expr in
                 (Tac.Return src) #: instrs
             | Ast.Expression expr -> let _ = parseExpr expr in ()
 
             | Ast.If ((cond, postfix), th, None) ->
                 let newCond = helpParseConditionWithPostfix postfix cond in
-                let cond = parseExpr newCond in
+                let cond = parseExpr_lval_convert newCond in
                 let end_lbl = Label.newLbl() in
                 let () = (Tac.JumpIfZero (cond, end_lbl)) #: instrs in
                 let () = parseStmt th in
                 (Tac.Label end_lbl) #: instrs
             | Ast.If ((cond, postfix), th, Some el) ->
                 let newCond = helpParseConditionWithPostfix postfix cond in
-                let cond = parseExpr newCond in
+                let cond = parseExpr_lval_convert newCond in
                 let else_lbl = Label.newLbl() in
                 let end_lbl = Label.newLbl() in
                 let () = (Tac.JumpIfZero (cond, else_lbl)) #: instrs in
@@ -276,7 +419,7 @@ let tackify ast globalEnv =
 
             | Ast.Switch ((cond, postfix), cases, stmt, break, default) ->
                 let newCond = helpParseConditionWithPostfix postfix cond in
-                let cond = parseExpr newCond in
+                let cond = parseExpr_lval_convert newCond in
                 let () = parseCases cond cases in
                 let () = (Tac.Jump default) #: instrs in
                 let () = parseStmt stmt in
@@ -288,14 +431,14 @@ let tackify ast globalEnv =
                 let () = parseStmt body in
                 let () = (Tac.Label continue) #: instrs in
                 let newCond = helpParseConditionWithPostfix postfix cond in
-                let cond = parseExpr newCond in
+                let cond = parseExpr_lval_convert newCond in
                 let () = (Tac.JumpIfNotZero (cond, begin_lbl)) #: instrs in
                 (Tac.Label break) #: instrs
 
             | Ast.While ((cond, postfix), body, (continue, break)) ->
                 let () = (Tac.Label continue) #: instrs in
                 let newCond = helpParseConditionWithPostfix postfix cond in
-                let cond = parseExpr newCond in
+                let cond = parseExpr_lval_convert newCond in
                 let () = (Tac.JumpIfZero (cond, break)) #: instrs in
                 let () = parseStmt body in
                 let () = (Tac.Jump continue) #: instrs in
@@ -317,7 +460,7 @@ let tackify ast globalEnv =
                     | None -> None
                     | Some (cond, postfix) ->
                         let newCond = helpParseConditionWithPostfix postfix cond in
-                        Some (parseExpr newCond)
+                        Some (parseExpr_lval_convert newCond)
                 end in
                 let () = (match cond with None -> () | Some cond -> (Tac.JumpIfZero (cond, break)) #: instrs) in
                 let () = parseStmt body in
@@ -345,7 +488,7 @@ let tackify ast globalEnv =
         match decl with
             | Ast.VarDecl (_, None, _, None) -> ()
             | Ast.VarDecl (id, Some expr, typ, None) -> 
-                let src = parseExpr (typ, expr) in
+                let src = parseExpr_lval_convert (typ, expr) in
                 (Tac.Copy (src, Tac.Var(id, parseType typ))) #: instrs
 
             | Ast.VarDecl (id, None, typ, Some Ast.Static) ->
@@ -439,6 +582,9 @@ let tackify ast globalEnv =
 
                         | Tac.Copy ((Tac.Constant D num), dst) ->
                             Tac.Copy (Tac.StaticVar ((Label.getLabelDouble num), Tac.Float64), dst) :: iter rest
+
+                        | Tac.Store ((Tac.Constant D num), dst) ->
+                            Tac.Store (Tac.StaticVar ((Label.getLabelDouble num), Tac.Float64), dst) :: iter rest
 
                         | Tac.JumpIfZero ((Tac.Constant D num), lbl) ->
                             Tac.JumpIfZero (Tac.StaticVar ((Label.getLabelDouble num), Tac.Float64), lbl) :: iter rest

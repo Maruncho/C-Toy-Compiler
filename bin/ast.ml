@@ -2,6 +2,8 @@
 type identifier = string
 
 type data_type = Int | Long | UInt | ULong | Double
+               | Ptr of data_type
+               | FunType of data_type list * data_type (*used in declaration parsing*)
 
 type var_type = AutoVariable of data_type
               | StaticVariable of data_type
@@ -15,15 +17,17 @@ type binary_op_sp = LogAnd | LogOr | Comma
 
 type typed_expr = data_type * expr
 and expr = Literal of lit
-          | Var of identifier * var_type
-          | Cast of data_type * typed_expr
-          | Unary of unary_op * typed_expr
-          | Binary of binary_op * typed_expr * typed_expr
-          | BinarySp of binary_op_sp * typed_expr_sp * typed_expr
-          | BinaryAssign of binary_op * typed_expr * typed_expr
-          | Assignment of typed_expr * typed_expr
-          | Ternary of typed_expr_sp * typed_expr * typed_expr
-          | Call of identifier * typed_expr list
+         | Var of identifier * var_type
+         | Cast of data_type * typed_expr
+         | Unary of unary_op * typed_expr
+         | Dereference of typed_expr
+         | AddressOf of typed_expr
+         | Binary of binary_op * typed_expr * typed_expr
+         | BinarySp of binary_op_sp * typed_expr_sp * typed_expr
+         | BinaryAssign of binary_op * typed_expr * typed_expr * (data_type option) (*cast to rhs type if necessary*)
+         | Assignment of typed_expr * typed_expr
+         | Ternary of typed_expr_sp * typed_expr * typed_expr
+         | Call of identifier * typed_expr list
 
 and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t 
         | Float64 of float
@@ -75,15 +79,33 @@ let size = function
     | Long -> 8
     | ULong -> 8
     | Double -> 100_8
+    | Ptr _ -> failwith "Don't use size() with ptr"
+    | FunType _ -> failwith "Don't use size() with func"
 
 let signed = function
     | Int | Long -> true
     | UInt | ULong -> false
     | _ -> failwith "Cannot use with non-integral types."
 
+let isIntegral = function
+    | Int | UInt | Long | ULong -> true
+    | Double -> false
+    | Ptr _ -> false
+    | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+
 let isFloatingPoint = function
     | Double -> true
-    | Int | UInt | Long | ULong -> false
+    | Int | UInt | Long | ULong | Ptr _ -> false
+    | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+
+let isPointer = function
+    | Ptr _ -> true
+    | Int | UInt | Long | ULong | Double -> false
+    | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+
+let getPointerType = function
+    | Ptr t -> t
+    | _ -> failwith "Don't use getPointerType() with non-pointer"
 
 
 let flipSigned = function
@@ -133,12 +155,14 @@ let string_storage_specifier_opt = function
     | None -> ""
     | Some x -> string_storage_specifier x
 
-let string_data_type = function
+let rec string_data_type = function
     | Int -> "int"
     | Long -> "long"
     | UInt -> "unsigned int"
     | ULong -> "unsigned long"
     | Double -> "double"
+    | Ptr r -> (string_data_type r) ^ "*"
+    | FunType (ps, r) -> (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (string_data_type r)
 
 let string_literal = function
     | Int32 num -> ("Int32(" ^ (Int32.to_string num) ^ ")")
@@ -162,6 +186,14 @@ let rec print_expr tabs expr =
         | Unary (op, expr) -> print_string ("Unary(" ^ string_unary_op op ^ ",\n");
                               print_typed_expr (tabs+1) expr;
                               print_string (")")
+
+        | Dereference expr -> print_string ("Dereference(\n");
+                              print_typed_expr (tabs+1) expr;
+                              print_string (")")
+        | AddressOf expr -> print_string ("AddressOf(\n");
+                              print_typed_expr (tabs+1) expr;
+                              print_string (")")
+
         | Binary (op, left, right) -> print_string ("Binary(" ^ string_binary_op op ^ ",\n");
                                       print_typed_expr (tabs+1) left; print_string ",\n";
                                       print_typed_expr (tabs+1) right;
@@ -174,10 +206,12 @@ let rec print_expr tabs expr =
                 List.iter (fun x -> print_stmt (tabs+1) x) between;
             print_typed_expr (tabs+1) right;
 
-        | BinaryAssign (op, dst, src) -> print_string ("BinaryAssign(" ^ string_binary_op op ^ ",\n");
-                                          print_typed_expr (tabs+1) dst; print_string ",\n";
-                                          print_typed_expr (tabs+1) src;
-                                          print_string (")")
+        | BinaryAssign (op, dst, src, original_type_opt) ->
+            print_string ("BinaryAssign(" ^ string_binary_op op ^ ",\n");
+            print_typed_expr (tabs+1) dst; print_string ",\n";
+            print_typed_expr (tabs+1) src;
+            (match original_type_opt with None ->() | Some t -> print_string (",\n"^string_data_type t));
+            print_string (")")
 
         | Assignment (left, right) -> print_string "Assign(\n";
                                       print_typed_expr (tabs+1) left; print_string ",\n";

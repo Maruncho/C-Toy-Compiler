@@ -8,6 +8,7 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
 
 type typ = Int32 of bool | Int64 of bool (*is_signed*)
          | Float64
+         | Ptr of typ
 
 type number = I of Z.t * typ
             | D of float
@@ -27,6 +28,9 @@ type instruction = Return of operand
                  | Unary of unary_op * operand * operand
                  | Binary of binary_op * operand * operand * operand
                  | Copy of operand * operand
+                 | GetAddress of operand * operand
+                 | Load of operand * operand
+                 | Store of operand * operand
                  | Jump of identifier
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
@@ -43,13 +47,15 @@ let type_signed = function
     | Int32 s -> s
     | Int64 s -> s
     | Float64 -> failwith "Make the code so that type_signed is not used with floats"
+    | Ptr _ -> failwith "Make the code so that type_signed is not used with pointers"
 
-let to_ast_type = function
+let rec to_ast_type = function
     | Int32 true -> Ast.Int
     | Int64 true -> Ast.Long
     | Int32 false -> Ast.UInt
     | Int64 false -> Ast.ULong
     | Float64 -> Ast.Double
+    | Ptr x -> Ast.Ptr (to_ast_type x)
 
 (*let type_float = function*)
 (*    | Float64 -> true*)
@@ -59,11 +65,13 @@ let number_zero typ = match typ with
     | Int32 _ -> I (Z.zero, typ)
     | Int64 _ -> I (Z.zero, typ)
     | Float64 -> D Float.zero
+    | Ptr _ -> I (Z.zero, Int64 false)
 
 let number_zero_operand typ = match typ with
     | Int32 _ -> Constant (I (Z.zero, typ))
     | Int64 _ -> Constant (I (Z.zero, typ))
     | Float64 -> StaticVar (Label.getLabelDouble Float.zero, Float64)
+    | Ptr _ -> Constant (I (Z.zero, Int64 false))
 
 let operand_type = function
     | Constant D _ -> Float64
@@ -96,12 +104,13 @@ let binary_op_str = function
     | GreaterThan -> "GT"
     | GreaterOrEqual -> "GE"
 
-let typ_str = function
+let rec typ_str = function
     | Int32 false -> "uint32"
     | Int32 true -> "int32"
     | Int64 false -> "uint64"
     | Int64 true -> "int64"
     | Float64 -> "float64"
+    | Ptr x -> (typ_str x)^"_ptr"
 
 let number_str = function
     | I (n, typ) -> (typ_str typ) ^ " " ^ Z.to_string n
@@ -127,6 +136,9 @@ let instruction_str inst =
         | Unary (op, s, d) -> "Unary("^(unary_op_str op)^", "^(operand_str s)^", "^(operand_str d)^")\n"
         | Binary (op, s1, s2, d) -> "Binary("^(binary_op_str op)^", "^(operand_str s1)^", "^(operand_str s2)^", "^(operand_str d)^")\n"
         | Copy (s, d) -> "Copy("^(operand_str s)^", "^(operand_str d)^")\n"
+        | GetAddress (s, d) -> "GetAddress("^(operand_str s)^", "^(operand_str d)^")\n"
+        | Load (s, d) -> "Load("^(operand_str s)^", "^(operand_str d)^")\n"
+        | Store (s, d) -> "Store("^(operand_str s)^", "^(operand_str d)^")\n"
         | Jump lbl -> "Jump("^lbl^")\n"
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
@@ -136,7 +148,7 @@ let instruction_str inst =
 let toplevel_str tl =
     match tl with
         | Function (name, is_global, params, instructions) ->
-            (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.split params |> fst))^"):\n" ^
+            (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.map (fun (n, t) -> n^":"^(typ_str t)) params))^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
         | StaticVariable (name, is_global, init) ->
             (if is_global then "global " else "") ^ name ^ " = " ^ (number_str init)

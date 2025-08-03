@@ -23,7 +23,7 @@ let () = try
     let _ = if m = Lex then (exit 0) in
 
     let (parsed, globalEnv) = Parser.parse lexed in
-    (*let _ = Ast.printProgram parsed in*)
+    let _ = Ast.printProgram parsed in
     (*let () = Environment.globalEnvString globalEnv in*)
     let _ = if m = Parse then (exit 0) in
 
