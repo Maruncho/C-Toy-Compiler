@@ -9,9 +9,11 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
 type typ = Int32 of bool | Int64 of bool (*is_signed*)
          | Float64
          | Ptr of typ
+         | ArrObj of typ * Int64.t
 
 type number = I of Z.t * typ
             | D of float
+            | ZeroInit of Int64.t
 
 type operand = Constant of number
              | Var of identifier * typ
@@ -31,15 +33,18 @@ type instruction = Return of operand
                  | GetAddress of operand * operand
                  | Load of operand * operand
                  | Store of operand * operand
+                 | DeclCompound of identifier * Int64.t * Int64.t(*align and count*)
+                 | AddPtr of operand * operand * Int64.t * operand
+                 | CopyToOffset of operand * operand * Int64.t
                  | Jump of identifier
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
                  | Call of identifier * operand list * operand
 
-type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list 
-              | StaticVariable of string * bool(*global*) * number
-              | StaticConst of string * number
+type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list
+              | StaticVariable of string * bool(*global*) * number list * Int64.t(*size bytes*) * Int64.t(*alignment*)
+              | StaticConst of string * number list
 
 type program = Program of toplevel list
 
@@ -48,6 +53,7 @@ let type_signed = function
     | Int64 s -> s
     | Float64 -> failwith "Make the code so that type_signed is not used with floats"
     | Ptr _ -> failwith "Make the code so that type_signed is not used with pointers"
+    | ArrObj _ -> failwith "Make the code so that type_signed is not used with array objects"
 
 let rec to_ast_type = function
     | Int32 true -> Ast.Int
@@ -56,6 +62,7 @@ let rec to_ast_type = function
     | Int64 false -> Ast.ULong
     | Float64 -> Ast.Double
     | Ptr x -> Ast.Ptr (to_ast_type x)
+    | ArrObj (x, s) -> Ast.Array (to_ast_type x, s)
 
 (*let type_float = function*)
 (*    | Float64 -> true*)
@@ -66,18 +73,21 @@ let number_zero typ = match typ with
     | Int64 _ -> I (Z.zero, typ)
     | Float64 -> D Float.zero
     | Ptr _ -> I (Z.zero, Int64 false)
+    | ArrObj _ -> failwith "Cannot number_zero an ArrObj"
 
 let number_zero_operand typ = match typ with
     | Int32 _ -> Constant (I (Z.zero, typ))
     | Int64 _ -> Constant (I (Z.zero, typ))
     | Float64 -> StaticVar (Label.getLabelDouble Float.zero, Float64)
     | Ptr _ -> Constant (I (Z.zero, Int64 false))
+    | ArrObj _ -> failwith "Cannot number_zero_operand an ArrObj"
 
 let operand_type = function
     | Constant D _ -> Float64
     | Constant I (_, t)
     | Var (_, t)
     | StaticVar (_, t) -> t
+    | Constant ZeroInit _ -> failwith "Cannot use operand_type with ZeroInit Const"
 
 let unary_op_str = function
     | Complement -> "NOT"
@@ -111,10 +121,12 @@ let rec typ_str = function
     | Int64 true -> "int64"
     | Float64 -> "float64"
     | Ptr x -> (typ_str x)^"_ptr"
+    | ArrObj (x, s) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
 
 let number_str = function
     | I (n, typ) -> (typ_str typ) ^ " " ^ Z.to_string n
     | D n -> (typ_str Float64) ^ " " ^ Float.to_string n
+    | ZeroInit s -> "ZeroInit " ^ (Int64.to_string s)
 
 let operand_str oper =
     match oper with
@@ -139,6 +151,9 @@ let instruction_str inst =
         | GetAddress (s, d) -> "GetAddress("^(operand_str s)^", "^(operand_str d)^")\n"
         | Load (s, d) -> "Load("^(operand_str s)^", "^(operand_str d)^")\n"
         | Store (s, d) -> "Store("^(operand_str s)^", "^(operand_str d)^")\n"
+        | DeclCompound (opr, aln, cnt) -> "DeclCompound("^(opr)^", "^(Int64.to_string aln)^" * "^(Int64.to_string cnt)^")\n"
+        | AddPtr (s, i, sc, d) -> "AddPtr("^(operand_str s)^", "^(operand_str i)^" * "^(Int64.to_string sc)^", "^(operand_str d)^")\n"
+        | CopyToOffset (s, d, o) -> "CopyToOffset("^(operand_str s)^", "^(operand_str d)^", "^(Int64.to_string o)^")\n"
         | Jump lbl -> "Jump("^lbl^")\n"
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
@@ -150,10 +165,10 @@ let toplevel_str tl =
         | Function (name, is_global, params, instructions) ->
             (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.map (fun (n, t) -> n^":"^(typ_str t)) params))^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
-        | StaticVariable (name, is_global, init) ->
-            (if is_global then "global " else "") ^ name ^ " = " ^ (number_str init)
+        | StaticVariable (name, is_global, init, _, _) ->
+            (if is_global then "global " else "") ^ name ^ " = " ^ String.concat ", " (List.map number_str init)
         | StaticConst (name, init) ->
-            name ^ " = " ^ (number_str init)
+            name ^ " = " ^ String.concat ", " (List.map number_str init)
 
 
 

@@ -1,40 +1,32 @@
-// Test out compound bitwise operations with dereferenced pointers, including
-// ones that involve implicit type conversions
-// Same operations as tests/chapter_12/valid/extra_credit/compound_bitwise.c
+// Apply ++ and -- to subscript expressions, which are lvalues
 
-unsigned long ul = 18446460386757245432ul; // 0xfffe_fdfc_fbfa_f9f8
+// indices (static to prevent copy prop)
+int i = 2;
+int j = 1;
+int k = 0;
 
 int main(void) {
+    int arr[3][2][2] = {
+        {{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}, {{9, 10}, {11, 12}}};
 
-    unsigned long *ul_ptr = &ul;
-    *ul_ptr &= -1000;
-    if (ul != 18446460386757244952ul /* 0xfffe_fdfc_fbfa_f818 */) {
-        return 1; // fail
+    if (arr[i][j][k]++ != 11) {
+        return 1;  // fail
     }
-    *ul_ptr |= 4294967040u;
-
-    if (ul != 18446460386824683288ul /* 0xfffe_fdfc_ffff_ff18 */) {
-        return 2; // fail
-    }
-    int i = 123456;
-    unsigned int ui = 4042322160u; // 0xf0f0_f0f0
-    long l = -252645136; // 0xffff_ffff_f0f0_f0f0
-    unsigned int *ui_ptr = &ui;
-    long *l_ptr = &l;
-    if (*ui_ptr ^= *l_ptr) {
-        return 3; // fail
-    }
-    if (ui) {
-        return 4;
+    if (arr[i][j][k] != 12) {
+        return 2;  // fail
     }
 
-    // check neighbors
-    if (i != 123456) {
-        return 5;
-    }
-    if (l != -252645136) {
-        return 6;
+    // also apply ++/-- to indices
+    if (++arr[--i][j--][++k] /* arr[1][1][1] */ != 9) {
+        return 3;  // fail
     }
 
-    return 0; // success
+    // check side effect of updating j
+    if (arr[i][j][k] /* arr[1][0][1]*/ != 6) {
+        return 4;  // fail
+    }
+    if (--arr[i][j][k] != 5) {
+        return 5;  // fail
+    }
+    return 0;  // success
 }

@@ -2,23 +2,27 @@
 module L = Lexer
 
 type identifer = string
+type size = Int64.t
 
 exception ParserDeclaratorError of string
 
 type declarator = Ident of identifer
                 | PointerDeclarator of declarator
+                | ArrayDeclarator of declarator * size
                 | FunDeclarator of param_info list * declarator
 
 and param_info = Ast.data_type * declarator
 
 type abstract_declarator = AbstractPointer of abstract_declarator
+                         | AbstractArray of abstract_declarator * size
                          | AbstractBase
 
 let rec string_abstract_decl d = match d with
     | AbstractPointer p -> "ptr(" ^ (string_abstract_decl p) ^ ")"
+    | AbstractArray (a, s) -> "arr(" ^ (string_abstract_decl a) ^ ", " ^ (Int64.to_string s) ^ ")"
     | AbstractBase -> "base"
 
-let process_abstract_declarator tokens base_type =
+let process_abstract_declarator tokens base_type expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
@@ -30,8 +34,24 @@ let process_abstract_declarator tokens base_type =
 
     in let isDecl tok = match tok with
         | L.ASTERISK
+        | L.LBRACK
         | L.LPAREN -> true
         | _ -> false
+
+    in let rec parseArrayBrackets prev =
+        if nextToken() = L.LBRACK then
+            let _ = eatToken() in
+            let const = try Const.parseConstExpr (expr_parser())
+                        with Const.ConstError msg -> raise (ParserDeclaratorError ("Error while parsing array declaration:\n\t" ^ msg))
+            in let size = match const with
+                | Const.I n ->
+                    if Z.leq n Z.zero then raise (ParserDeclaratorError "Array size must be >= 0")
+                    else Z.to_int64_unsigned n
+                | _ -> raise (ParserDeclaratorError "Array size must be an integer.")
+            in let () = expect L.RBRACK
+            in parseArrayBrackets (AbstractArray (prev, size))
+        else
+            prev
 
     in let rec parseAbstractDeclarator() = match nextToken() with
         | L.ASTERISK -> let _ = eatToken() in
@@ -44,13 +64,18 @@ let process_abstract_declarator tokens base_type =
     and parseDirectAbstractDeclarator() = match nextToken() with
         | L.LPAREN -> let _ = eatToken() in
                       let r = parseAbstractDeclarator() in
-                      let _ = expect L.RPAREN in r
+                      let _ = expect L.RPAREN in
+                      parseArrayBrackets r
+        | L.LBRACK -> parseArrayBrackets AbstractBase
         | _ -> raise (ParserDeclaratorError "Invalid Abstract Declarator")
 
     in let rec process_abstract_declarator declarator base_type = match declarator with
         | AbstractBase -> base_type
         | AbstractPointer subDecl ->
             let derived_type = Ast.Ptr base_type in
+            (process_abstract_declarator subDecl derived_type)
+        | AbstractArray (subDecl, size) ->
+            let derived_type = Ast.Array (base_type, size) in
             (process_abstract_declarator subDecl derived_type)
 
     in
@@ -60,10 +85,10 @@ let process_abstract_declarator tokens base_type =
             AbstractBase
         in
         (*let () = print_string ((string_abstract_decl decl) ^ "\n") in*)
-    process_abstract_declarator decl base_type
+        process_abstract_declarator decl base_type
 
 
-let process_declarator tokens base_type type_parser =
+let process_declarator tokens base_type type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
@@ -91,17 +116,35 @@ let process_declarator tokens base_type type_parser =
 
     and parseDirectDeclarator() =
         let simple = parseSimpleDeclarator() in
-        if nextToken() = L.LPAREN then
-            let _ = eatToken() in
-            let r =
-                if nextToken() = L.VOID then
-                    let _ = eatToken() in
-                    FunDeclarator ([], simple)
-                else
-                    FunDeclarator (parseParamList(), simple) in
-            let _ = expect L.RPAREN in r
-        else
-            simple
+        match nextToken() with
+            | L.LPAREN ->
+                let _ = eatToken() in
+                let r =
+                    if nextToken() = L.VOID then
+                        let _ = eatToken() in
+                        FunDeclarator ([], simple)
+                    else
+                        FunDeclarator (parseParamList(), simple) in
+                let _ = expect L.RPAREN in r
+
+            | L.LBRACK ->
+                let rec iter prev =
+                    if nextToken() = L.LBRACK then
+                        let _ = eatToken() in
+                        let const = try Const.parseConstExpr (expr_parser())
+                                    with Const.ConstError msg -> raise (ParserDeclaratorError ("Error while parsing array declaration:\n\t" ^ msg))
+                        in let size = match const with
+                            | Const.I n ->
+                                if Z.leq n Z.zero then raise (ParserDeclaratorError "Array size must be >= 0")
+                                else Z.to_int64_unsigned n
+                            | _ -> raise (ParserDeclaratorError "Array size must be an integer.")
+                        in let () = expect L.RBRACK
+                        in iter (ArrayDeclarator (prev, size))
+                    else
+                        prev
+                in iter simple
+
+            | _ -> simple
 
     and parseDeclarator() = match nextToken() with
         | L.ASTERISK -> let _ = eatToken() in PointerDeclarator (parseDeclarator())
@@ -124,6 +167,9 @@ let process_declarator tokens base_type type_parser =
         | Ident name -> (name, base_type, [])
         | PointerDeclarator subDecl ->
             let derived_type = Ast.Ptr base_type in
+            (process_declarator subDecl derived_type)
+        | ArrayDeclarator (subDecl, size) ->
+            let derived_type = Ast.Array (base_type, size) in
             (process_declarator subDecl derived_type)
         | FunDeclarator (params, subDecl) -> begin match subDecl with
             | Ident name ->

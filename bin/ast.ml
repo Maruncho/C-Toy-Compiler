@@ -3,6 +3,7 @@ type identifier = string
 
 type data_type = Int | Long | UInt | ULong | Double
                | Ptr of data_type
+               | Array of data_type * Int64.t
                | FunType of data_type list * data_type (*used in declaration parsing*)
 
 type var_type = AutoVariable of data_type
@@ -10,9 +11,12 @@ type var_type = AutoVariable of data_type
               | Function of data_type list * data_type
 
 type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
+              | PtrIncrement | PtrDecrement
 type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift |
                  Eq | Neq | Lt | Le | Gt | Ge |
-                 Assign
+                 Assign |
+                 PtrAdd | PtrSub | PtrPtrSub
+
 type binary_op_sp = LogAnd | LogOr | Comma
 
 type typed_expr = data_type * expr
@@ -22,6 +26,7 @@ and expr = Literal of lit
          | Unary of unary_op * typed_expr
          | Dereference of typed_expr
          | AddressOf of typed_expr
+         | Subscript of typed_expr * typed_expr
          | Binary of binary_op * typed_expr * typed_expr
          | BinarySp of binary_op_sp * typed_expr_sp * typed_expr
          | BinaryAssign of binary_op * typed_expr * typed_expr * (data_type option) (*cast to rhs type if necessary*)
@@ -29,7 +34,7 @@ and expr = Literal of lit
          | Ternary of typed_expr_sp * typed_expr * typed_expr
          | Call of identifier * typed_expr list
 
-and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t 
+and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t
         | Float64 of float
 
 and postfix = stmt list
@@ -61,7 +66,9 @@ and stmt = Return of typed_expr
 
 and storage_class = Static | Extern
 
-and var_decl = identifier * expr option * data_type * storage_class option
+and initialiser = SingleInit of typed_expr | CompoundInit of initialiser list
+
+and var_decl = identifier * initialiser option * data_type * storage_class option
 and var_decl_sp = var_decl * postfix
 
 and fun_decl = identifier * (data_type * identifier) list * block option * data_type * storage_class
@@ -73,6 +80,16 @@ type toplevel = decl
 
 type program = Program of toplevel list
 
+let init_zero = function
+    | Int -> Int32 0l
+    | UInt -> UInt32 0l
+    | Long -> Int64 0L
+    | ULong -> UInt64 0L
+    | Double -> Float64 0.0
+    | Ptr _ -> failwith "Cannot use int_zero with ptr."
+    | Array _ -> failwith "Cannot use int_zero with arr."
+    | FunType _ -> failwith "Cannot use int_zero with funType."
+
 let size = function
     | Int -> 4
     | UInt -> 4
@@ -80,7 +97,50 @@ let size = function
     | ULong -> 8
     | Double -> 100_8
     | Ptr _ -> failwith "Don't use size() with ptr"
+    | Array _ -> failwith "Don't use size() with array"
     | FunType _ -> failwith "Don't use size() with func"
+
+let rec indexing_size = function
+    | Int -> 4L
+    | UInt -> 4L
+    | Long -> 8L
+    | ULong -> 8L
+    | Double -> 8L
+    | Ptr _ -> 8L
+    | Array (typ, size) -> Int64.mul (indexing_size typ) size
+    | FunType _ -> failwith "Don't use indexing_size() with func"
+
+let array_scale = function
+    | Array (typ, _) -> indexing_size typ
+    | Ptr typ -> indexing_size typ
+    | _ -> failwith "Cannot use array_scale with non-array or non-ptr"
+
+let rec alignment = function
+    | Int -> 4L
+    | UInt -> 4L
+    | Long -> 8L
+    | ULong -> 8L
+    | Double -> 8L
+    | Ptr _ -> 8L
+    | Array (typ, _) as x -> if Int64.compare (indexing_size x) 16L >= 0
+                             then 16L
+                             else alignment typ
+    | FunType _ -> failwith "Don't use alignment() with func"
+
+let aligned_size = function
+    | Int -> 4L
+    | UInt -> 4L
+    | Long -> 8L
+    | ULong -> 8L
+    | Double -> 8L
+    | Ptr _ -> 8L
+    | Array _ as x -> 
+        let size = indexing_size x in
+        let align = alignment x in
+        let modulo = Int64.rem size align in
+        if Int64.equal modulo 0L then size else Int64.add size (Int64.sub align modulo)
+    | FunType _ -> failwith "Don't use indexing_size() with func"
+
 
 let signed = function
     | Int | Long -> true
@@ -91,22 +151,46 @@ let isIntegral = function
     | Int | UInt | Long | ULong -> true
     | Double -> false
     | Ptr _ -> false
-    | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+    | Array _ -> false
+    | FunType _ -> failwith "Don't use isIntegral() with func"
 
 let isFloatingPoint = function
     | Double -> true
-    | Int | UInt | Long | ULong | Ptr _ -> false
+    | Int | UInt | Long | ULong | Ptr _ | Array _ -> false
     | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+
+let isScalar = function
+    | Int | UInt | Long | ULong | Double -> true
+    | Ptr _ -> false
+    | Array _ -> false
+    | FunType _ -> failwith "Don't use isScalar() with func"
 
 let isPointer = function
     | Ptr _ -> true
+    | Array _ -> false (*Sadly, not quite at the parsing-typechecking stage*)
     | Int | UInt | Long | ULong | Double -> false
-    | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+    | FunType _ -> failwith "Don't use isPointer() with func"
+
+let isArray = function
+    | Array _ -> true
+    | Int | UInt | Long | ULong | Double | Ptr _ -> false
+    | FunType _ -> failwith "Don't use isArray() with func"
+
+let isCompound = function
+    | Array _ -> true
+    | Int | UInt | Long | ULong | Double | Ptr _ -> false
+    | FunType _ -> failwith "Don't use isCompound() with func"
+
 
 let getPointerType = function
     | Ptr t -> t
+    | Array (t, _) -> t
     | _ -> failwith "Don't use getPointerType() with non-pointer"
 
+
+let getArrayData = function
+    | Array (t, s) -> (t, s)
+    | _ -> failwith "Don't use getArrayData() with non-array"
 
 let flipSigned = function
     | Int -> UInt
@@ -120,12 +204,14 @@ let string_unary_op = function
     | Negate -> "-"
     | LogNot -> "!"
     | Increment -> "++"
+    | PtrIncrement -> "++"
     | Decrement -> "--"
+    | PtrDecrement -> "--"
     | Rvalue -> "+"
 
 let string_binary_op = function
-    | Add -> "+"
-    | Sub -> "-"
+    | Add | PtrAdd -> "+"
+    | Sub | PtrSub | PtrPtrSub -> "-"
     | Mul -> "*"
     | Div -> "/"
     | Mod -> "%"
@@ -162,6 +248,7 @@ let rec string_data_type = function
     | ULong -> "unsigned long"
     | Double -> "double"
     | Ptr r -> (string_data_type r) ^ "*"
+    | Array (r, s) -> (string_data_type r) ^ "[" ^ (Int64.to_string s) ^ "]"
     | FunType (ps, r) -> (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (string_data_type r)
 
 let string_literal = function
@@ -193,6 +280,11 @@ let rec print_expr tabs expr =
         | AddressOf expr -> print_string ("AddressOf(\n");
                               print_typed_expr (tabs+1) expr;
                               print_string (")")
+
+        | Subscript (left, right) -> print_string "Subscript(\n";
+                                     print_typed_expr (tabs+1) left; print_string ",\n";
+                                     print_typed_expr (tabs+1) right;
+                                     print_string (")")
 
         | Binary (op, left, right) -> print_string ("Binary(" ^ string_binary_op op ^ ",\n");
                                       print_typed_expr (tabs+1) left; print_string ",\n";
@@ -296,6 +388,15 @@ and print_stmt tabs stmt =
             if br <> de then print_string "default,\n" else print_string "\n";
             print_stmt (tabs+1) body
 
+and print_initialiser tabs init =
+    match init with
+        | SingleInit e -> print_typed_expr tabs e
+        | CompoundInit init_lst ->
+            print_string "{";
+            List.iter (fun init -> print_initialiser (tabs+1) init; print_string ",\n") init_lst;
+            print_string "}"
+
+
 and print_decl tabs decl =
     print_string (String.make (tabs*2) ' ');
     match decl with
@@ -303,8 +404,8 @@ and print_decl tabs decl =
             print_string ((string_storage_specifier_opt storage)^(string_data_type typ)^" VarDecl("^id);
             begin match expr_opt with
                 | None -> print_string ")\n"
-                | Some e -> print_string ",\n";
-                            print_expr (tabs+1) e;
+                | Some init -> print_string ",\n";
+                            print_initialiser (tabs+1) init;
                             print_string ")\n"
             end
         | FunDecl (id, params, body, ret_typ, storage) ->

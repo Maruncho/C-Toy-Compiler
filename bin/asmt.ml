@@ -5,6 +5,7 @@ type identifier = string
 type translationUnitIdentifiersDict = unit Environment.Env.t
 
 type assembly_type = Byte | Word | LongWord | QuadWord | Double
+                   | ByteArray of Int64.t * Int64.t (* size * align *)
 
 type cond_code = E | NE | G | GE | L | LE | A | AE | B | BE | P | NP
 
@@ -28,8 +29,10 @@ type binop = Add | Sub | Mul |
 type operand = Imm of Z.t
              | Reg of register
              | Pseudo of identifier
-             | Data of identifier
-             | Memory of register * Int64.t
+             | PseudoMem of identifier * Int64.t
+             | Data of identifier * Int64.t option (*const offset*)
+             | Memory of register * Int64.t * register option * Int64.t option
+             (*| Indexed of register * Int64.t * Int64.t*)
 
 type instruction = Mov of assembly_type * operand * operand
                  | Movsx of (assembly_type * operand) * (assembly_type * operand)
@@ -55,10 +58,13 @@ type instruction = Mov of assembly_type * operand * operand
                  | Push of assembly_type * operand
                  | Call of identifier
                  | Ret
+                 | Nop of bool (*can_cleanup*)
+
+                 | DeclCompound of identifier * Int64.t * Int64.t(*align and count*)
 
 type func = string * instruction list * bool
 type bss = string * assembly_type * bool
-type data = string * Const.number * assembly_type * bool
+type data = string * assembly_type(*alignment*) * (Const.number * assembly_type) list * bool
 type ro = string * Const.number * assembly_type
 
 type program = func list * bss list * data list * ro list
@@ -87,6 +93,15 @@ let type_to_size = function
     | LongWord -> 4
     | QuadWord -> 8
     | Double -> 8
+    | ByteArray (s, _) -> Int64.to_int s
+
+let type_to_align = function
+    | Byte -> 1
+    | Word -> 2
+    | LongWord -> 4
+    | QuadWord -> 8
+    | Double -> 8
+    | ByteArray (_, a) -> Int64.to_int a
 
 let type_to_string ?(decimal=false) = function
     | Byte -> "byte"
@@ -95,6 +110,7 @@ let type_to_string ?(decimal=false) = function
     | QuadWord -> "quad"
     | Double when decimal -> "quad"
     | Double -> "double"
+    | ByteArray _ -> "zero"
 
 let register_str reg = function
      | Byte -> (match reg with
@@ -173,6 +189,7 @@ let register_str reg = function
 
         | RAX | RCX | RDX | RDI | RSI | RBP | RSP | R8 | R9 | R10 | R11 -> failwith "Cannot use general register with double."
     )
+    | ByteArray _ -> failwith "Cannot use ByteArray with registers."
 
 let p ?(packed=false) t = match t with
     | Byte -> "b"
@@ -180,6 +197,7 @@ let p ?(packed=false) t = match t with
     | LongWord -> "l"
     | QuadWord -> "q"
     | Double -> if packed then "pd" else "sd"
+    | ByteArray _ -> failwith "Cannout use p() with ByteArray."
 
 let unop_str op typ = (match op with
     | Neg -> "neg"
@@ -207,8 +225,16 @@ let operand_str asm_type oper externalNames =
         | Imm num -> "$" ^ (Z.to_string num)
         | Reg reg -> register_str reg asm_type
         | Pseudo id -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id
-        | Data id -> (if Environment.setMem id externalNames then id^"@PLT" else id) ^ "(%rip)"
-        | Memory (reg, num) -> (if num = 0L then "" else (Int64.to_string num))^"("^(register_str reg QuadWord)^")"
+        | PseudoMem (id, off) -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id ^ "+" ^ (Int64.to_string off)
+        | Data (id, scale_opt) ->
+            (if Environment.setMem id externalNames then id^"@PLT" else id) ^ 
+            (if Option.is_none scale_opt then "" else ("+" ^ (Int64.to_string (Option.get scale_opt))))^
+            "(%rip)"
+        | Memory (reg, num, index_opt, scale_opt) ->
+            (if num = 0L then "" else (Int64.to_string num))^"("^(register_str reg QuadWord)^
+            (if Option.is_none index_opt then "" else (", " ^ (register_str (Option.get index_opt) QuadWord)))^
+            (if Option.is_none scale_opt then "" else (", " ^ (Int64.to_string (Option.get scale_opt))))^
+            ")"
 
 let instruction_str inst externalNames =
     let en = externalNames in
@@ -238,6 +264,7 @@ let instruction_str inst externalNames =
         | SignExtend LongWord -> "cdq"
         | SignExtend QuadWord -> "cqo"
         | SignExtend Double -> failwith "Can't SignExtend double."
+        | SignExtend ByteArray _ -> failwith "Can't SignExtend ByteArray."
         | Jmp lbl -> "jmp\t" ^ lbl
         | JmpCC (cc, lbl) -> "j"^(cond_code_str cc)^"\t" ^ lbl
         | SetCC (cc, d) -> "set"^(cond_code_str cc)^"\t" ^ (operand_str Byte d en)
@@ -249,7 +276,14 @@ let instruction_str inst externalNames =
         | Push (typ, s) -> "push"^(p typ)^"\t" ^ (operand_str QuadWord s en)
         | Call lbl -> "call\t" ^ (if Environment.setMem lbl externalNames then lbl^"@PLT" else lbl)
         | Ret -> "movq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
+
+        | Nop _ -> "nop"
+        | DeclCompound _ -> failwith "DeclCompound should be eaten in the assemble phase."
     ) ^ "\n"
+
+let rec repeat_string s n =
+  if n <= 0 then ""
+  else s ^ repeat_string s (n - 1)
 
 let func_str (name, instructions, is_global) externalNames =
     (if is_global then "\t.globl " ^ name ^ "\n" else "")  ^
@@ -264,10 +298,16 @@ let bss_str (name, typ, is_global) =
     name ^ ":\n" ^
     "\t.zero "^(type_to_size typ |> string_of_int)^"\n"
 
-let data_str (name, init, typ, is_global) =
+let data_str (name, align, data_list, is_global) =
     (if is_global then "\t.globl " ^ name ^ "\n" else "")  ^
     name ^ ":\n" ^
-    "\t."^(type_to_string ~decimal:true typ)^" "^(Const.toString ~decimal:true init)^"\n"
+    snd (List.fold_left (fun (prev_align, acc) (init, typ) ->
+            let align = type_to_size typ in
+            (align,
+                acc ^
+                (if align > prev_align then ""(*"\t.align " ^ (string_of_int align) ^ "\n"*) else "") ^
+                "\t."^(type_to_string ~decimal:true typ)^" "^(Const.toString ~decimal:true init)^"\n"))
+        ((type_to_size align), "") data_list)
 
 let ro_str (name, init, typ) =
     name ^ ":\n" ^
@@ -275,20 +315,20 @@ let ro_str (name, init, typ) =
 
 
 let string_of_asmt (fns, (bsses:bss list), (datas:data list), (ros:ro list)) externalNames =
-    let bsses = List.sort (fun (_,typ1,_) (_,typ2,_) -> ((type_to_size typ2) - (type_to_size typ1))) bsses in
-    let datas = List.sort (fun (_,_,typ1,_) (_,_,typ2,_) -> ((type_to_size typ2) - (type_to_size typ1))) datas in
-    let ros = List.sort (fun (_,_,typ1) (_,_,typ2) -> ((type_to_size typ2) - (type_to_size typ1))) ros in
+    let bsses = List.sort (fun (_,typ1,_) (_,typ2,_) -> ((type_to_align typ2) - (type_to_align typ1))) bsses in
+    let datas = List.sort (fun (_,typ1,_,_) (_,typ2,_,_) -> ((type_to_align typ2) - (type_to_align typ1))) datas in
+    let ros = List.sort (fun (_,_,typ1) (_,_,typ2) -> ((type_to_align typ2) - (type_to_align typ1))) ros in
 
     (if not (List.is_empty ros) then
-        "\t.section .rodata\n\t.align 8\n" ^
+        "\t.section .rodata\n\t.align 16\n" ^
         List.fold_left (fun acc x -> acc ^ (ro_str x)) "" ros
     else "") ^
     (if not (List.is_empty bsses) then
-        "\t.bss\n\t.align 8\n" ^
+        "\t.bss\n\t.align 16\n" ^
         List.fold_left (fun acc x -> acc ^ (bss_str x)) "" bsses
     else "") ^
     (if not (List.is_empty datas) then
-        "\n\t.data\n\t.align 8\n" ^
+        "\n\t.data\n\t.align 16\n" ^
         List.fold_left (fun acc x -> acc ^ (data_str x)) "" datas
     else "") ^
     (if not (List.is_empty fns) then

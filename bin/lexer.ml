@@ -31,6 +31,8 @@ type token =
     | EXTERN
     | LPAREN
     | RPAREN
+    | LBRACK
+    | RBRACK
     | LBRACE
     | RBRACE
     | COLON
@@ -101,6 +103,8 @@ let string_of_token = function
     | EXTERN -> "extern"
     | LPAREN -> "("
     | RPAREN -> ")"
+    | LBRACK -> "["
+    | RBRACK -> "]"
     | LBRACE -> "{"
     | RBRACE -> "}"
     | COLON -> ":"
@@ -192,6 +196,12 @@ let token_regexes =
 ;
     (* ) *)
     (re {|(\))|}, (fun _ -> RPAREN))
+;
+    (* [ *)
+    (re {|(\[)|}, (fun _ -> LBRACK))
+;
+    (* ] *)
+    (re {|(\])|}, (fun _ -> RBRACK))
 ;
     (* { *)
     (re {|(\{)|}, (fun _ -> LBRACE))

@@ -9,6 +9,8 @@ let parseUnaryOp = function
         | Ast.LogNot -> Tac.Not
         | Ast.Increment -> Tac.Incr
         | Ast.Decrement -> Tac.Decr
+        | Ast.PtrIncrement -> failwith "PtrIncrement in Const is weird that it happened."
+        | Ast.PtrDecrement -> failwith "PtrDecrement in Const is weird that it happened."
         | Ast.Rvalue -> failwith "Rvalue is a useless unop and should be just unboxed(tackifyConst.ml)"
 
 let parseBinaryOp = function
@@ -28,6 +30,7 @@ let parseBinaryOp = function
         | Ast.Le -> Tac.LessOrEqual
         | Ast.Gt -> Tac.GreaterThan
         | Ast.Ge -> Tac.GreaterOrEqual
+        | Ast.PtrAdd | Ast.PtrSub | Ast.PtrPtrSub -> failwith "Pointer arithmetic should be handled separatedly in parseBinary"
         | Ast.Assign -> failwith "assignment operator is not handled by parseBinary"
 
 let trunc num typ = match typ with
@@ -62,6 +65,7 @@ let truncWrapper num typ = match typ with
     | Ast.UInt -> (match num with I num -> I (trunc num typ) | D _ -> failwith "Fix your cringe logic.")
     | Ast.Double -> num
     | Ast.Ptr _ -> num (*failwith "Impossible ptr in const.ml"*)
+    | Ast.Array _ -> num
     | Ast.FunType _ -> failwith "Impossible func in const.ml"
 
 
@@ -81,6 +85,7 @@ let assert_fit num typ =
         | Ast.UInt -> Z.fits_int32_unsigned integer || Z.fits_int32 integer, "uint"
         | Ast.Double -> true, "double"
         | Ast.Ptr _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
+        | Ast.Array _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
         | Ast.FunType _ -> failwith "Impossible func in const.ml"
     in if not r then failwith ("DEBUG ASSERT: Number " ^ (Z.to_string integer) ^ " doesn't fit in " ^ typ_str ^ ".")
     else num
@@ -122,6 +127,7 @@ let parseConstExpr typed_expr =
 
             | (_, Ast.Dereference _) -> raise (ConstError "Cannot use dereference operator in constant expressions.")
             | (_, Ast.AddressOf _) -> raise (ConstError "Cannot use addressOf operator in constant expressions.")
+            | (_, Ast.Subscript _) -> raise (ConstError "Cannot use subscript operator in constant expressions.")
 
             | (_, Ast.BinarySp (Ast.LogAnd, (left, _), right)) ->
                 let toBool num = begin match num with
@@ -202,5 +208,14 @@ let parseConstExpr typed_expr =
     with | Z.Overflow -> raise (ConstError "Constant expression number conversion failed somewhere.")
          | Division_by_zero -> raise (ConstError "Constant expression division by zero somewhere.")
     in (assert_fit result (fst typed_expr))
+
+
+let rec parseInitialiser initialiser = match initialiser with
+    | Ast.SingleInit expr -> [parseConstExpr expr]
+    | Ast.CompoundInit inits -> List.fold_left (fun acc init -> acc @ (parseInitialiser init)) [] inits
+
+let rec parseInitialiserWithTypes initialiser = match initialiser with
+    | Ast.SingleInit expr -> [parseConstExpr expr, fst expr]
+    | Ast.CompoundInit inits -> List.fold_left (fun acc init -> acc @ (parseInitialiserWithTypes init)) [] inits
 
 

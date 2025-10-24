@@ -1,7 +1,7 @@
 
 type fun_data = string * Ast.data_type list * Ast.data_type * bool (* name, params, ret_type, is_defined *)
 
-type initial_value = Tentative | Initial of Const.number | NoInitializer
+type initial_value = Tentative | Initial of (Const.number * Ast.data_type) list | NoInitializer
 
 type decl_type = Var of string * Ast.data_type
                | StaticVar of string * Ast.data_type
@@ -90,7 +90,7 @@ let resolveMatchingVars globalEnv oldVar newVar id =
     add id (VarAttr (newId, newInit, newType, newExternal)) globalEnv
 
 let defineGlobalVar localEnv globalEnv lvl id init_expr typ is_external =
-    let init = try Initial (Const.parseConstExpr init_expr) with Const.ConstError e -> raise (EnvironmentError e) in
+    let init = try Initial (Const.parseInitialiserWithTypes init_expr) with Const.ConstError e -> raise (EnvironmentError e) in
     match find_opt id globalEnv with
         | None -> (add id (StaticVar (id, typ), lvl) localEnv, add id (VarAttr (id, init, typ, is_external)) globalEnv)
         | Some (FunAttr _) -> raise (EnvironmentError ("Ambiguous definition of '"^id^"'. Defined first as a function."))
@@ -127,7 +127,7 @@ let tryAddVariable (localEnv: env) (globalEnv: envGlobal) level storage_opt iden
             | (Some Ast.Static, _) ->
                 if isInScope identifier level localEnv then raise (EnvironmentError (identifier ^ " is already in scope")) else
                 let _ = (if (Option.is_some init_opt) then
-                    let _ = try (Const.parseConstExpr (Option.get init_opt)) with Const.ConstError e -> raise (EnvironmentError e) in () else ())
+                    let _ = try (Const.parseInitialiser (Option.get init_opt)) with Const.ConstError e -> raise (EnvironmentError e) in () else ())
                 in (add identifier (StaticVar (new_identifier, typ), level) localEnv), globalEnv
             | (Some Ast.Extern, Some _) -> raise (EnvironmentError "Cannot initialize extern variable inside a function.")
             | (Some Ast.Extern, None) ->

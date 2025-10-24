@@ -121,6 +121,7 @@ let parseType typ =
         | Tac.Int64 s -> Asmt.QuadWord, s
         | Tac.Float64 -> Asmt.Double, false
         | Tac.Ptr _ -> Asmt.QuadWord, false
+        | Tac.ArrObj (typ, s) -> Asmt.ByteArray (s, typ |> Tac.to_ast_type |> Ast.alignment), false
 
 let classify_parameters typs =
     let rec iter typs i f s = match typs with
@@ -135,7 +136,7 @@ let classify_parameters typs =
                 | 4 -> Asmt.Reg Asmt.RCX, i+1, s
                 | 5 -> Asmt.Reg Asmt.R8, i+1, s
                 | 6 -> Asmt.Reg Asmt.R9, i+1, s
-                | _ -> Asmt.Memory (Asmt.RBP, Int64.of_int (8*s+8)), i, s+1 (*+8 is return adress*)
+                | _ -> Asmt.Memory (Asmt.RBP, Int64.of_int (8*s+8), None, None), i, s+1 (*+8 is return adress*)
             )
             in (fst (parseType typ), reg) :: iter t i f s
         | (Tac.Float64 as typ) :: t ->
@@ -148,19 +149,27 @@ let classify_parameters typs =
                 | 6 -> Asmt.Reg Asmt.XMM5, f+1, s
                 | 7 -> Asmt.Reg Asmt.XMM6, f+1, s
                 | 8 -> Asmt.Reg Asmt.XMM7, f+1, s
-                | _ -> Asmt.Memory (Asmt.RBP, Int64.of_int (8*s+8)), f, s+1 (*+8 is return adress*)
+                | _ -> Asmt.Memory (Asmt.RBP, Int64.of_int (8*s+8), None, None), f, s+1 (*+8 is return adress*)
             )
             in (fst (parseType typ), reg) :: iter t i f s
+        | Tac.ArrObj _ :: _ -> failwith "Function parameters cannot be ArrObjs"
 
     in iter typs 1 1 1
 
 
-let parseOperand opr =
+let parseOperand ?(offset=None) opr =
     match opr with
         | Tac.Constant Tac.I (num, typ) -> parseType typ, Asmt.Imm num
         | Tac.Constant Tac.D _ -> failwith "DEBUG: Double immediates are not allowed."
-        | Tac.Var (id, typ) -> parseType typ, Asmt.Pseudo id
-        | Tac.StaticVar (id, typ) -> parseType typ, Asmt.Data id
+        | Tac.Var (id, typ) ->
+            let typ = parseType typ in
+            if Option.is_some offset then typ, Asmt.PseudoMem (id, (Option.get offset))
+            else typ, Asmt.Pseudo id
+        | Tac.StaticVar (id, typ) ->
+            let typ = parseType typ in
+            if Option.is_some offset then typ, Asmt.Data (id, Some (Option.get offset))
+            else typ, Asmt.Data (id, None)
+        | Tac.Constant ZeroInit _ -> failwith "DEBUG: ZeroInit immediates caught in the wild."
 
 
 let rec parseInstruction inst =
@@ -198,7 +207,7 @@ let rec parseInstruction inst =
                 | Asmt.QuadWord ->
                     let max_long_plus_one = 9223372036854775808.0 in
                     let max_long_plus_one_int = Asmt.Imm (Z.of_int64 9223372036854775808L) in
-                    let max_long_plus_one_double = Asmt.Data (Label.getLabelDouble max_long_plus_one) in
+                    let max_long_plus_one_double = Asmt.Data (Label.getLabelDouble max_long_plus_one, None) in
                     let lbl_out_of_range = Label.newLbl() in
                     let lbl_end = Label.newLbl() in
                     let temp = Asmt.Pseudo (Temp.newTemp()) in
@@ -295,23 +304,56 @@ let rec parseInstruction inst =
             [Asmt.Mov (fst s_typ, src, dst)]
 
         | Tac.GetAddress (s, d) ->
-            let (_, src) = parseOperand s in
+            let (typ, src) = parseOperand s in
             let (_, dst) = parseOperand d in
-            [Asmt.Lea (src, dst)]
+            (match (fst typ, src) with
+                | (Asmt.ByteArray _, Asmt.Pseudo id) -> [Asmt.Lea (Asmt.PseudoMem (id, 0L), dst)]
+                | (Asmt.ByteArray _, Asmt.Data (id, None)) -> [Asmt.Lea (Asmt.Data (id, None), dst)]
+                | (Asmt.ByteArray _, _) -> failwith "Cannot have ByteArray src in GetAddress which is not a Pseudo or Data"
+                | _ -> [Asmt.Lea (src, dst)]
+            )
 
         | Tac.Load (s, d) ->
             let (_, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
            [
             Asmt.Mov (Asmt.QuadWord, src, Asmt.Reg Asmt.RAX);
-            Asmt.Mov (fst d_typ, Asmt.Memory(Asmt.RAX, 0L), dst)]
+            Asmt.Mov (fst d_typ, Asmt.Memory(Asmt.RAX, 0L, None, None), dst)]
 
         | Tac.Store (s, d) ->
             let (s_typ, src) = parseOperand s in
             let (_, dst) = parseOperand d in
            [
             Asmt.Mov (Asmt.QuadWord, dst, Asmt.Reg Asmt.RAX);
-            Asmt.Mov (fst s_typ, src, Asmt.Memory(Asmt.RAX, 0L))]
+            Asmt.Mov (fst s_typ, src, Asmt.Memory(Asmt.RAX, 0L, None, None))]
+
+        (*It's metainfo for the memory-register allocator*)
+        | Tac.DeclCompound (id, align, count) -> [Asmt.DeclCompound (id, align, count)]
+
+        | Tac.AddPtr (p, i, scale, d) ->
+            let (_, ptr) = parseOperand p in
+            let (_, index) = parseOperand i in
+            let (_, dst) = parseOperand d in
+            begin match index with
+                | Asmt.Imm index ->
+                   [Asmt.Mov (Asmt.QuadWord, ptr, Asmt.Reg Asmt.RAX);
+                    Asmt.Lea (Asmt.Memory (Asmt.RAX, Int64.mul scale (Z.to_int64 index), None, None), dst)]
+
+                | _ ->
+                   [
+                    Asmt.Mov (Asmt.QuadWord, ptr, Asmt.Reg Asmt.RAX);
+                    Asmt.Mov (Asmt.QuadWord, index, Asmt.Reg Asmt.RDX)] @
+                    (if (match scale with 1L | 2L | 4L | 8L -> true | _ -> false) then
+                        [Asmt.Lea (Asmt.Memory (Asmt.RAX, 0L, Some Asmt.RDX, Some scale), dst)]
+                    else
+                       [Asmt.Binary (Asmt.QuadWord, Asmt.Mul, Asmt.Imm (Z.of_int64 scale), Asmt.Reg Asmt.RDX);
+                        Asmt.Lea (Asmt.Memory (Asmt.RAX, 0L, Some Asmt.RDX, None), dst)])
+            end
+
+        | Tac.CopyToOffset (s, d , off) ->
+            let (s_typ, src) = parseOperand s in
+            let (_, dst) = parseOperand d ~offset:(Some off) in
+           [Asmt.Mov (fst s_typ, src, dst)]
 
         | Tac.Jump lbl ->
             [Asmt.Jmp lbl]
@@ -365,7 +407,7 @@ let rec parseInstruction inst =
                 | _ when typ = Asmt.QuadWord || typ = Asmt.Double ->
                     [Asmt.Push (Asmt.QuadWord, src)]
 
-                | Asmt.Pseudo _ | Asmt.Memory _ | Asmt.Data _ ->
+                | Asmt.Pseudo _ | Asmt.Memory _ | Asmt.Data _ | Asmt.PseudoMem _ ->
                     [Asmt.Movsx ((typ, src), (Asmt.QuadWord, Asmt.Reg Asmt.RAX));
                      Asmt.Push (QuadWord, (Asmt.Reg Asmt.RAX))])
 
@@ -392,14 +434,19 @@ let parseProgram tacky =
                 (List.combine types_and_srcs names) in
             let fn = (name, List.fold_left (fun acc inst -> acc @ (parseInstruction inst)) preInstrs instructions, is_global) in
             func := fn :: !func; iter rest
-        | Tac.StaticVariable (name, is_global, init) :: rest ->
-            let init, typ = match init with Tac.I (num, typ) -> Const.I num, typ | Tac.D num -> Const.D num, Tac.Float64 in
-            if Const.isZero init then
-                (bss := (name, fst (parseType typ), is_global) :: !bss; iter rest)
+        | Tac.StaticVariable (name, is_global, inits, size_bytes, alignment) :: rest ->
+            let processed = List.map (fun init -> match init with
+                    | Tac.I (num, typ) -> Const.I num, typ |> parseType |> fst
+                    | Tac.D num -> Const.D num, Tac.Float64 |> parseType |> fst
+                    | Tac.ZeroInit s  -> Const.I (Z.of_int64 s), Asmt.ByteArray (s, alignment)
+            ) inits in
+            if List.exists (fun (num, typ) -> not (Const.isZero num || match typ with Asmt.ByteArray _ -> true | _ -> false)) processed then
+                (data := (name, Asmt.ByteArray (size_bytes, alignment), processed, is_global) :: !data; iter rest)
             else
-                (data := (name, init, fst (parseType typ), is_global) :: !data; iter rest)
+                (bss := (name, Asmt.ByteArray (size_bytes, alignment), is_global) :: !bss; iter rest)
         | Tac.StaticConst (name, init) :: rest ->
-            let init, typ = match init with Tac.I (num, typ) -> Const.I num, typ | Tac.D num -> Const.D num, Tac.Float64 in
+            if List.length init <> 1 then failwith "Fix The StaticConst implementation to support number lists" else
+            let init, typ = match (List.hd init) with Tac.I (num, typ) -> Const.I num, typ | Tac.D num -> Const.D num, Tac.Float64 | Tac.ZeroInit _ -> failwith "StaticConst not implemented with zeroinit" in
             (ro := (name, init, fst (parseType typ)) :: !ro; iter rest)
         | [] -> ()
     in let () = match tacky with
@@ -410,19 +457,20 @@ let parseProgram tacky =
 
 let replacePseudos (name, instructions, is_global) =
     let dict = ref [] in
-    let f operand typ ((o8, o4, o2, o1) as offs) = match operand with 
-        | Asmt.Imm _ | Asmt.Reg _ | Asmt.Memory _ | Asmt.Data _ -> offs
+    let f operand typ ((o16, o8, o4, o2, o1) as offs) = match operand with 
+        | Asmt.Imm _ | Asmt.Reg _ | Asmt.Memory _ | Asmt.Data _ | Asmt.PseudoMem _ -> offs
         | Asmt.Pseudo id -> if List.mem id !dict then offs else
             let offs = begin match typ with
-                | Asmt.Byte ->     (o8, o4, o2, o1+1)
-                | Asmt.Word ->     (o8, o4, o2+1, o1)
-                | Asmt.LongWord -> (o8, o4+1, o2, o1)
-                | Asmt.QuadWord -> (o8+1, o4, o2, o1)
-                | Asmt.Double ->   (o8+1, o4, o2, o1)
+                | Asmt.Byte ->     (o16, o8, o4, o2, o1+1)
+                | Asmt.Word ->     (o16, o8, o4, o2+1, o1)
+                | Asmt.LongWord -> (o16, o8, o4+1, o2, o1)
+                | Asmt.QuadWord -> (o16, o8+1, o4, o2, o1)
+                | Asmt.Double ->   (o16, o8+1, o4, o2, o1)
+                | Asmt.ByteArray _ -> failwith "ByteArray in replacePseudos"
             end
             in let () = dict := id :: !dict in offs
 
-    in let (o8, o4, o2, o1) = List.fold_left (fun acc instr -> match instr with
+    in let (o16, o8, o4, o2, o1) = List.fold_left (fun acc instr -> match instr with
         | Asmt.Mov (typ, s, d)
         | Asmt.Binary (typ, _, s, d)
         | Asmt.Cmp (typ, s, d) -> (f s typ acc) |> (f d typ)
@@ -440,6 +488,18 @@ let replacePseudos (name, instructions, is_global) =
         | Asmt.Cvttsx2si ((typ_s, s), (typ_d, d)) -> (f s typ_s acc) |> (f d typ_d)
         | Asmt.Cmov (typ, _, s, d) -> (f s typ acc) |> (f d typ)
 
+        | Asmt.DeclCompound (id, align, count) ->
+            let (o16, o8, o4, o2, o1) = acc in
+            let () = dict := id :: !dict in
+            begin match align with
+            | 16L-> (o16 + (Int64.to_int count), o8, o4, o2, o1)
+            | 8L -> (o16, o8 + (Int64.to_int count), o4, o2, o1)
+            | 4L -> (o16, o8, o4 + (Int64.to_int count), o2, o1)
+            | 2L -> (o16, o8, o4, o2 + (Int64.to_int count), o1)
+            | 1L -> (o16, o8, o4, o2, o1 + (Int64.to_int count))
+            | _ -> acc
+        end
+
         | Asmt.Jmp _
         | Asmt.JmpCC _
         | Asmt.Label _
@@ -447,14 +507,16 @@ let replacePseudos (name, instructions, is_global) =
         | Asmt.SignExtend _
         | Asmt.AllocateStack _
         | Asmt.DeallocateStack _
+        | Asmt.Nop _
         | Asmt.Ret -> acc
 
-    ) (0, 0, 0, 0) instructions in
+    ) (0, 0, 0, 0, 0) instructions in
 
-    let offset8 = ref 0L in
-    let offset4 = ref (Int64.of_int(o8*8)) in
-    let offset2 = ref (Int64.of_int(o8*8+o4*4)) in
-    let offset1 = ref (Int64.of_int(o8*8+o4*4+o2*2)) in
+    let offset16 = ref 0L in
+    let offset8 = ref (Int64.of_int(o16*16)) in
+    let offset4 = ref (Int64.of_int(o16*16+o8*8)) in
+    let offset2 = ref (Int64.of_int(o16*16+o8*8+o4*4)) in
+    let offset1 = ref (Int64.of_int(o16*16+o8*8+o4*4+o2*2)) in
     let dict = ref [] in
     let f operand typ = match operand with
         | Asmt.Imm _ | Asmt.Reg _ | Asmt.Memory _ | Asmt.Data _ -> operand
@@ -467,11 +529,18 @@ let replacePseudos (name, instructions, is_global) =
                     | Asmt.LongWord -> let () = offset4 := Int64.add !offset4 4L in !offset4
                     | Asmt.QuadWord -> let () = offset8 := Int64.add !offset8 8L in !offset8
                     | Asmt.Double -> let () = offset8 := Int64.add !offset8 8L in !offset8
+                    | Asmt.ByteArray _ -> failwith "ByteArray in replacePseudos"
                 end in
-                let operand = Asmt.Memory (Asmt.RBP, Int64.neg offset) in
+                let operand = Asmt.Memory (Asmt.RBP, Int64.neg offset, None, None) in
                 let () = dict := ((id, operand) :: !dict) in
                 operand
         end
+        | Asmt.PseudoMem (id, off) -> begin match (List.assoc id (!dict)) with
+            | Asmt.Memory (Asmt.RBP, root, x, y) ->
+                Asmt.Memory (Asmt.RBP, Int64.add root off, x, y)
+            | _ -> failwith "Invalid root of PseudoMem."
+        end
+
 
     in let newInstructions = List.map (fun instr -> match instr with
         | Asmt.Mov (typ, s, d) -> Asmt.Mov (typ, f s typ, f d typ)
@@ -490,6 +559,19 @@ let replacePseudos (name, instructions, is_global) =
         | Asmt.SetCC (x1, s) -> Asmt.SetCC (x1, f s Asmt.Byte)
         | Asmt.Cmov (typ, x1, s, d) -> Asmt.Cmov (typ, x1, f s typ, f d typ)
 
+        | Asmt.DeclCompound (id, align, count) ->
+            let off = match align with
+                | 16L-> let () = offset16:= Int64.add !offset16 (Int64.mul 16L count) in !offset16
+                | 8L -> let () = offset8 := Int64.add !offset8 (Int64.mul 8L count) in !offset8
+                | 4L -> let () = offset4 := Int64.add !offset4 (Int64.mul 4L count) in !offset4
+                | 2L -> let () = offset2 := Int64.add !offset2 (Int64.mul 2L count) in !offset2
+                | 1L -> let () = offset1 := Int64.add !offset1 (Int64.mul 1L count) in !offset1
+                | _ -> failwith "INVALID OFFSET"
+            in
+            let operand = Asmt.Memory (Asmt.RBP, Int64.neg off, None, None) in
+            let () = dict := ((id, operand) :: !dict) in Asmt.Nop true
+
+
         | Asmt.Jmp _
         | Asmt.JmpCC _
         | Asmt.Label _
@@ -497,6 +579,7 @@ let replacePseudos (name, instructions, is_global) =
         | Asmt.SignExtend _
         | Asmt.AllocateStack _
         | Asmt.DeallocateStack _
+        | Asmt.Nop _
         | Asmt.Ret -> instr
 
         | Asmt.Push (typ, s) -> Asmt.Push (typ, f s typ)
@@ -507,7 +590,7 @@ let replacePseudos (name, instructions, is_global) =
         let pad = if remainder = 0L then 0L else Int64.sub 16L remainder in
         Int64.add offset pad
 
-    in (name, newInstructions, is_global), roundAlloc (Int64.of_int (o8*8+o4*4+o2*2+o1))
+    in (name, newInstructions, is_global), roundAlloc (Int64.of_int (o16*16+o8*8+o4*4+o2*2+o1))
 
 let fixUp (name, instructions, is_global) allocateBytes =
     let rec fixErroneous instrs = match instrs with
@@ -519,18 +602,21 @@ let fixUp (name, instructions, is_global) allocateBytes =
 
         | h :: t -> begin match h with
 
+            (*Cleanup nops*)
+            | Asmt.Nop true -> (fixErroneous t)
+
             (*Xor-zeroing a mem is slower than a mov 0*)
-            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Memory (Asmt.RBP, k1) as d), (Asmt.Memory (Asmt.RBP, k2)))
+            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Memory (Asmt.RBP, k1,_,_) as d), (Asmt.Memory (Asmt.RBP, k2,_,_)))
               when (Int64.compare k1 k2) = 0 ->
                 (Asmt.Mov (ty, Asmt.Imm Z.zero, d)) :: (fixErroneous t)
-            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Data k1 as d), (Asmt.Data k2))
+            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Data (k1,_) as d), (Asmt.Data (k2,_)))
               when (String.compare k1 k2) = 0 ->
                 (Asmt.Mov (ty, Asmt.Imm Z.zero, d)) :: (fixErroneous t)
 
-            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Memory (Asmt.RBP, k1) as d), (Asmt.Memory (Asmt.RBP, k2)))
+            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Memory (Asmt.RBP, k1,_,_) as d), (Asmt.Memory (Asmt.RBP, k2,_,_)))
               when (Int64.compare k1 k2) = 0 ->
                 (Asmt.Mov (ty, Asmt.Imm Z.zero, d)) :: (fixErroneous t)
-            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Data k1 as d), (Asmt.Data k2))
+            | Asmt.Binary (ty, Asmt.Xor, (Asmt.Data (k1,_) as d), (Asmt.Data (k2,_)))
               when (String.compare k1 k2) = 0 ->
                 (Asmt.Mov (ty, Asmt.Imm Z.zero, d)) :: (fixErroneous t)
 
@@ -635,7 +721,7 @@ let fixUp (name, instructions, is_global) allocateBytes =
             (*Push cannot have xmm*)
             | Asmt.Push (_, (Asmt.Reg reg as d)) when Asmt.isXMM reg ->
                 (Asmt.Binary (Asmt.QuadWord, Asmt.Sub, Asmt.Imm (Z.of_int 8), Asmt.Reg Asmt.RSP)) ::
-                (Asmt.Mov (Asmt.Double, d, Asmt.Memory (Asmt.RSP, 0L))) :: (fixErroneous t)
+                (Asmt.Mov (Asmt.Double, d, Asmt.Memory (Asmt.RSP, 0L,None,None))) :: (fixErroneous t)
 
             (* movsx cannot have imm as src *)
             | Asmt.Movsx ((ty_src, (Asmt.Imm _ as imm)), (ty_dst, dst)) ->
