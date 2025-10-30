@@ -9,6 +9,9 @@ type token =
     | UINT32_LIT of Z.t
     | UINT64_LIT of Z.t
     | DOUBLE_LIT of float
+    | CHAR_LIT of string
+    | STRING_LIT of string
+    | CHAR
     | INT
     | LONG
     | SIGNED
@@ -81,6 +84,9 @@ let string_of_token = function
     | UINT32_LIT num -> (Z.to_string num)
     | UINT64_LIT num -> (Z.to_string num)
     | DOUBLE_LIT num -> (Float.to_string num)
+    | CHAR_LIT str -> "'" ^ str ^ "'"
+    | STRING_LIT str -> "\"" ^ str ^ "\""
+    | CHAR -> "char"
     | INT -> "int"
     | LONG -> "long"
     | SIGNED -> "signed"
@@ -149,11 +155,33 @@ let string_of_token = function
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
 let reLiteral regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|([^\w.](?:.|\s)*)|}] |> Re.compile
 
+let rec unescape_unOCamlable str =
+    if String.length str < 2 then str else
+    let ascii_code = match (String.sub str 0 2) with
+        | "\\?" -> 63
+        | "\\a" -> 7
+        | "\\f" -> 12
+        | "\\v" -> 11
+        | _ -> -1
+    in
+    if ascii_code < 0 then
+        let rest = unescape_unOCamlable (String.sub str 1 ((String.length str) - 1)) in
+        (String.sub str 0 1) ^ rest
+    else
+        let rest = unescape_unOCamlable (String.sub str 2 ((String.length str) - 2)) in
+        (String.make 1 (Char.chr ascii_code)) ^ rest
+
+let fixDoubleQuote = function
+    | "\"" -> "\\\""
+    | x -> x
+
+
 let token_regexes =
 [
     (* Identifiers and keywords *)
     (re {|([a-zA-Z_]\w*)\b|},
     (fun str -> match str with
+        | "char" -> CHAR
         | "int" -> INT
         | "long" -> LONG
         | "signed" -> SIGNED
@@ -190,6 +218,12 @@ let token_regexes =
 ;
     (* Integer32 *)
     (reLiteral {|([0-9]+)\b|}, (fun str -> INT32_LIT (Z.of_string str)))
+;
+    (* Char *)
+    (re {|'([^'\\\n]|\\['"?\\abfnrtv])'|}, (fun str -> CHAR_LIT (str |> fixDoubleQuote |> unescape_unOCamlable |> Scanf.unescaped)))
+;
+    (* String *)
+    (re {|"((?:[^"\\\n]|\\['"\\?abfnrtv])*)"|}, (fun str -> STRING_LIT (str |> unescape_unOCamlable |> Scanf.unescaped)))
 ;
     (* ( *)
     (re {|(\()|}, (fun _ -> LPAREN))

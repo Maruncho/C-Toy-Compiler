@@ -7,15 +7,23 @@ let compare n1 n2 = match n1, n2 with
     | Const.D n1, Const.D n2 -> Float.compare n1 n2
     | Const.I n1, Const.I n2 -> Z.compare n1 n2
 
-module Env = Set.Make(struct type t = Const.number let compare = compare end)
+    | Const.I _, Const.S _
+    | Const.D _, Const.S _
+    | Const.S _, Const.I _
+    | Const.S _, Const.D _
+    | Const.S _, Const.S _ -> failwith "Don't use SemantSwitch compare with string literals"
+
+module Env = Set.Make(struct type t = Const.result let compare = compare end)
 
 let parse (program:Ast.program) =
     let toNumber = function
+        | Ast.Int8 num -> Const.I (Z.of_int num)
+        | Ast.UInt8 num -> Const.I (Z.of_int num)
         | Ast.Int32 num -> Const.I (Z.of_int32 num)
         | Ast.Int64 num -> Const.I (Z.of_int64 num)
         | Ast.UInt32 num -> Const.I (Z.of_int32 num)
         | Ast.UInt64 num -> Const.I (Z.of_int64 num)
-        | Ast.Float64 num -> Const.D num 
+        | Ast.Float64 num -> Const.D num
     in let rec parseStatement stmt switch env default = match stmt with
         | Ast.Case (c, _) -> if not switch then raise (ParserError "Case statement cannot be outside of switch.")
                              else if Env.mem (toNumber c) env then raise (ParserError ("Duplicate case " ^ (Const.toString (toNumber c))))

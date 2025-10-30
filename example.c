@@ -1,32 +1,25 @@
-// Apply ++ and -- to subscript expressions, which are lvalues
+#ifdef SUPPRESS_WARNINGS
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wswitch"
+#else
+#pragma GCC diagnostic ignored "-Woverflow"
+#endif
+#endif
 
-// indices (static to prevent copy prop)
-int i = 2;
-int j = 1;
-int k = 0;
+// Make sure we promote the controlling condition in a switch statement from
+// character type to int
 
 int main(void) {
-    int arr[3][2][2] = {
-        {{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}, {{9, 10}, {11, 12}}};
-
-    if (arr[i][j][k]++ != 11) {
-        return 1;  // fail
+    char c = 100;
+    switch (c) {
+        case 0:
+            return 1;
+        case 100:
+            return 0;
+        // not a duplicate of 100, b/c we're not converting cases to char type
+        case 356:
+            return 2;
+        default:
+            return 3;
     }
-    if (arr[i][j][k] != 12) {
-        return 2;  // fail
-    }
-
-    // also apply ++/-- to indices
-    if (++arr[--i][j--][++k] /* arr[1][1][1] */ != 9) {
-        return 3;  // fail
-    }
-
-    // check side effect of updating j
-    if (arr[i][j][k] /* arr[1][0][1]*/ != 6) {
-        return 4;  // fail
-    }
-    if (--arr[i][j][k] != 5) {
-        return 5;  // fail
-    }
-    return 0;  // success
 }

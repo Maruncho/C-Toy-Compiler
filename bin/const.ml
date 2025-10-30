@@ -38,10 +38,13 @@ let trunc num typ = match typ with
     | Ast.ULong -> Z.extract num 0 64
     | Ast.Int -> Z.signed_extract num 0 32
     | Ast.UInt -> Z.extract num 0 32
+    | Ast.Char
+    | Ast.SChar -> Z.signed_extract num 0 8
+    | Ast.UChar -> Z.extract num 0 8
     | _ -> failwith "Cannot use with non-integral types."
 
-type number = I of Z.t | D of float
-type numberPair = Ip of Z.t * Z.t | Dp of float * float
+type result = I of Z.t | D of float | S of string
+type resultPair = Ip of Z.t * Z.t | Dp of float * float
 
 let toString ?(decimal=false) = function
     | I n -> Z.to_string n
@@ -49,20 +52,26 @@ let toString ?(decimal=false) = function
                     Int64.bits_of_float n |> Int64.to_string
              else
                 Float.to_string n
+    | S s -> "\""^(String.escaped s)^"\""
 
 let isZero = function
     | I n -> (Z.compare Z.zero n) = 0
     | D n -> ((Float.compare Float.zero n) = 0) && (not (Float.sign_bit n)) (* is not -0.0 *)
+    | S _ -> false
 
 let isIntegerZero = function
     | I n -> (Z.compare Z.zero n) = 0
     | D _ -> false
+    | S _ -> false
 
 let truncWrapper num typ = match typ with
+    | Ast.Char
+    | Ast.SChar
+    | Ast.UChar
     | Ast.Long
     | Ast.ULong
     | Ast.Int
-    | Ast.UInt -> (match num with I num -> I (trunc num typ) | D _ -> failwith "Fix your cringe logic.")
+    | Ast.UInt -> (match num with I num -> I (trunc num typ) | D _ | S _ -> failwith "Fix your cringe logic.")
     | Ast.Double -> num
     | Ast.Ptr _ -> num (*failwith "Impossible ptr in const.ml"*)
     | Ast.Array _ -> num
@@ -73,16 +82,19 @@ let assert_fit num typ =
     let integer = match num with
         | I _ when Ast.isFloatingPoint typ -> failwith ("DEBUG ASSERT: Number is not floating point")
         | I n -> n
-        | D _ -> Z.zero
+        | D _ | S _ -> Z.zero
     in let _ = match num with
         | D n when Ast.isFloatingPoint typ -> n
         | D _ -> failwith ("DEBUG ASSERT: Number is not integer.")
-        | I _ -> Float.zero
+        | I _ | S _ -> Float.zero
     in let r, typ_str = match typ with
         | Ast.Long -> Z.fits_int64_unsigned integer || Z.fits_int64 integer, "long"
         | Ast.ULong -> Z.fits_int64_unsigned integer || Z.fits_int64 integer, "ulong"
         | Ast.Int -> Z.fits_int32_unsigned integer || Z.fits_int32 integer, "int"
         | Ast.UInt -> Z.fits_int32_unsigned integer || Z.fits_int32 integer, "uint"
+        | Ast.Char -> Z.fits_int32_unsigned (Z.shift_left integer 24) || Z.fits_int32 (Z.shift_left integer 24), "char"
+        | Ast.SChar -> Z.fits_int32_unsigned (Z.shift_left integer 24) || Z.fits_int32 (Z.shift_left integer 24), "schar"
+        | Ast.UChar -> Z.fits_int32_unsigned (Z.shift_left integer 24) || Z.fits_int32 (Z.shift_left integer 24), "uchar"
         | Ast.Double -> true, "double"
         | Ast.Ptr _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
         | Ast.Array _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
@@ -97,12 +109,17 @@ let parseConstExpr typed_expr =
                                                     | Ast.UInt32 num -> I ((Z.of_int32 num |> Z.extract) 0 32)
                                                     | Ast.Int64 num -> I (Z.of_int64 num)
                                                     | Ast.UInt64 num -> I ((Z.of_int64 num |> Z.extract) 0 64)
+                                                    | Ast.Int8 num -> I ((Z.of_int num |> Z.extract) 0 8)
+                                                    | Ast.UInt8 num -> I ((Z.of_int num |> Z.extract) 0 8)
                                                     | Ast.Float64 num -> D num)
+            | (_, Ast.String str) -> S str
             | (_, Ast.Var _) -> raise (ConstError "Cannot use variables in constant expressions")
 
             | (_, Ast.Cast(new_type, ((old_type, _) as typed_expr))) ->
                 let parsed = parse typed_expr seen in
                 if old_type = new_type || Ast.isPointer new_type then parsed else
+
+                if Ast.isStringLiteral typed_expr then raise (ConstError "Cannot convert string literal to a number type") else
 
                 if (Ast.size new_type) = (Ast.size old_type) then
                     parsed
@@ -111,17 +128,19 @@ let parseConstExpr typed_expr =
                     | I num -> I (trunc num new_type)
                     | D _ when (Ast.isFloatingPoint new_type) -> failwith "float32 not implemented"
                     | D num -> I (Z.of_float num)
+                    | S _ -> failwith "Impossible"
                 end
 
             | (_, Ast.Unary (Ast.Rvalue, src)) -> parse src seen
             | (typ, Ast.Unary (op, typed_expr)) ->
                 let src = parse typed_expr seen in
                 let result = begin match parseUnaryOp op with
-                    | Tac.Complement -> (match src with I num -> I (Z.lognot num) | D _ -> raise (ConstError "Can't complement a float"))
-                    | Tac.Negate -> (match src with I num -> I (Z.neg num) | D num -> D (Float.neg num))
+                    | Tac.Complement -> (match src with I num -> I (Z.lognot num) | D _ -> raise (ConstError "Can't complement a float") | S _ -> raise (ConstError "Can't complement a string constant"))
+                    | Tac.Negate -> (match src with I num -> I (Z.neg num) | D num -> D (Float.neg num) | S _ -> raise (ConstError "Can't negate a string constant"))
                     | Tac.Not -> (match src with
                                     | I num -> if Z.compare num Z.zero = 0 then I Z.zero else I Z.one
-                                    | D num -> if Float.compare num Float.zero = 0 then I Z.zero else I Z.one)
+                                    | D num -> if Float.compare num Float.zero = 0 then I Z.zero else I Z.one
+                                    | S _ -> raise (ConstError "Can't logical not a string constant"))
                     | Tac.Incr | Tac.Decr -> raise (ConstError "Increment/Decrement is not a constant expression operator")
                 end in truncWrapper result typ
 
@@ -133,6 +152,7 @@ let parseConstExpr typed_expr =
                 let toBool num = begin match num with
                     | I num -> if Z.compare num Z.zero = 0 then Z.zero else Z.one
                     | D num -> if Float.compare num Float.zero = 0 then Z.zero else Z.one
+                    | S _ -> raise (ConstError "Can't use string literals as booleans")
                 end in
                 let left = parse left seen in
                 let right = parse right seen in (*cannot have side effects, so it's okay*)
@@ -142,6 +162,7 @@ let parseConstExpr typed_expr =
                 let toBool num = begin match num with
                     | I num -> if Z.compare num Z.zero = 0 then Z.zero else Z.one
                     | D num -> if Float.compare num Float.zero = 0 then Z.zero else Z.one
+                    | S _ -> raise (ConstError "Can't use string literals as booleans")
                 end in
                 let left = parse left seen in
                 let right = parse right seen in (*cannot have side effects, so it's okay*)
@@ -198,7 +219,7 @@ let parseConstExpr typed_expr =
 
             | (_, Ast.Ternary ((cond, _), th, el)) -> 
                 let cond = parse cond seen in
-                if (match cond with I c -> Z.compare c Z.zero <> 0 | D c -> Float.compare c Float.zero <> 0)
+                if (match cond with I c -> Z.compare c Z.zero <> 0 | D c -> Float.compare c Float.zero <> 0 | S _ -> raise (ConstError "Can't use string literals as booleans"))
                 then parse th seen else parse el seen
 
             | (_, Ast.Call (_, _)) ->

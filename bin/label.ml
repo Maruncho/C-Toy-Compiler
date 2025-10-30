@@ -20,3 +20,15 @@ let getLabelDouble num = match MapDouble.find_opt num !doubleConsts with
     | Some lbl -> lbl
 let labelDoubleFlushToList() = let r = MapDouble.to_list !doubleConsts in
                                let () = doubleConsts := MapDouble.empty in r
+
+
+module MapString = Map.Make(struct type t = string let compare = String.compare end)
+
+let stringConsts : string MapString.t ref = ref MapString.empty
+let getLabelString str = match MapString.find_opt str !stringConsts with
+    | None -> let lbl = newRo() in
+              let () = stringConsts := MapString.add str lbl !stringConsts in
+              lbl
+    | Some lbl -> lbl
+let labelStringFlushToList() = let r = MapString.to_list !stringConsts in
+                               let () = stringConsts := MapString.empty in r

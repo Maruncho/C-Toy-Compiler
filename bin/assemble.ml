@@ -117,6 +117,7 @@ let chooseBinop binop src1 src2 dst (typ, signed) = match binop with
 
 let parseType typ =
     match typ with
+        | Tac.Int8 s -> Asmt.Byte, s
         | Tac.Int32 s -> Asmt.LongWord, s
         | Tac.Int64 s -> Asmt.QuadWord, s
         | Tac.Float64 -> Asmt.Double, false
@@ -127,6 +128,7 @@ let classify_parameters typs =
     let rec iter typs i f s = match typs with
         | [] -> []
         | ((Tac.Int64 _) as typ) :: t
+        | ((Tac.Int8 _) as typ) :: t
         | ((Tac.Ptr _) as typ) :: t
         | ((Tac.Int32 _) as typ) :: t ->
             let (reg, i, s) = (match i with
@@ -161,6 +163,7 @@ let parseOperand ?(offset=None) opr =
     match opr with
         | Tac.Constant Tac.I (num, typ) -> parseType typ, Asmt.Imm num
         | Tac.Constant Tac.D _ -> failwith "DEBUG: Double immediates are not allowed."
+        | Tac.Constant Tac.S _ -> failwith "DEBUG: String immediates are not allowed."
         | Tac.Var (id, typ) ->
             let typ = parseType typ in
             if Option.is_some offset then typ, Asmt.PseudoMem (id, (Option.get offset))
@@ -194,12 +197,24 @@ let rec parseInstruction inst =
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: FloatToInt SRC and DST types mismatch." else
-            [Asmt.Cvttsx2si ((fst s_typ, src), (fst d_typ, dst))]
+            begin match (fst d_typ) with
+                | Asmt.LongWord | Asmt.QuadWord ->
+                    [Asmt.Cvttsx2si ((fst s_typ, src), (fst d_typ, dst))]
+                | Asmt.Byte ->
+                   [
+                    Asmt.Cvttsx2si ((fst s_typ, src), (Asmt.LongWord, Asmt.Reg Asmt.RAX));
+                    Asmt.Mov (Asmt.Byte, Asmt.Reg Asmt.RAX, dst)]
+                | _ -> failwith "Not implemented"
+            end
         | Tac.FloatToUInt (s, d) ->
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: FloatToUInt SRC and DST types mismatch." else
             begin match (fst d_typ) with
+                | Asmt.Byte ->
+                   [
+                    Asmt.Cvttsx2si ((fst s_typ, src), (Asmt.LongWord, Asmt.Reg Asmt.RAX));
+                    Asmt.Mov (Asmt.Byte, Asmt.Reg Asmt.RAX, dst)]
                 | Asmt.LongWord ->
                     let mid = Asmt.Pseudo (Temp.newTemp()) in
                    [Asmt.Cvttsx2si ((fst s_typ, src), (Asmt.QuadWord, mid));
@@ -228,12 +243,23 @@ let rec parseInstruction inst =
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: IntToFloat SRC and DST types mismatch." else
-            [Asmt.Cvtsi2sx ((fst s_typ, src), (fst d_typ, dst))]
+            begin match (fst s_typ) with
+                | Asmt.LongWord | Asmt.QuadWord ->
+                    [Asmt.Cvtsi2sx ((fst s_typ, src), (fst d_typ, dst))]
+                | Asmt.Byte ->
+                   [
+                    Asmt.Movsx ((Asmt.Byte, src), (Asmt.LongWord, Asmt.Reg Asmt.RAX));
+                    Asmt.Cvtsi2sx ((Asmt.LongWord, Asmt.Reg Asmt.RAX), (fst d_typ, dst))]
+                | _ -> failwith "Not implemented"
+            end
         | Tac.UIntToFloat (s, d) ->
             let (s_typ, src) = parseOperand s in
             let (d_typ, dst) = parseOperand d in
             if s_typ = d_typ then failwith "DEBUG: Assemble: UIntToFloat SRC and DST types mismatch." else
             begin match (fst s_typ) with
+                | Asmt.Byte ->
+                    [Asmt.Movzx ((Asmt.Byte, src), (Asmt.LongWord, Asmt.Reg Asmt.RAX));
+                    Asmt.Cvtsi2sx ((Asmt.LongWord, Asmt.Reg Asmt.RAX), (fst d_typ, dst))]
                 | Asmt.LongWord ->
                     let mid = Asmt.Pseudo (Temp.newTemp()) in
                     [Asmt.Movzx ((Asmt.LongWord, src), (Asmt.QuadWord, mid));
@@ -438,6 +464,11 @@ let parseProgram tacky =
             let processed = List.map (fun init -> match init with
                     | Tac.I (num, typ) -> Const.I num, typ |> parseType |> fst
                     | Tac.D num -> Const.D num, Tac.Float64 |> parseType |> fst
+                    | Tac.S str ->
+                        let length = String.length str |> Int64.of_int in
+                        let null_terminated = String.ends_with ~suffix:"\x00" str in
+                        let str = if null_terminated then String.sub str 0 (String.length str - 1) else str in
+                        Const.S str, Asmt.String (length, null_terminated)
                     | Tac.ZeroInit s  -> Const.I (Z.of_int64 s), Asmt.ByteArray (s, alignment)
             ) inits in
             if List.exists (fun (num, typ) -> not (Const.isZero num || match typ with Asmt.ByteArray _ -> true | _ -> false)) processed then
@@ -446,8 +477,16 @@ let parseProgram tacky =
                 (bss := (name, Asmt.ByteArray (size_bytes, alignment), is_global) :: !bss; iter rest)
         | Tac.StaticConst (name, init) :: rest ->
             if List.length init <> 1 then failwith "Fix The StaticConst implementation to support number lists" else
-            let init, typ = match (List.hd init) with Tac.I (num, typ) -> Const.I num, typ | Tac.D num -> Const.D num, Tac.Float64 | Tac.ZeroInit _ -> failwith "StaticConst not implemented with zeroinit" in
-            (ro := (name, init, fst (parseType typ)) :: !ro; iter rest)
+            let init, typ = match (List.hd init) with
+                | Tac.I (num, typ) -> Const.I num, typ |> parseType |> fst
+                | Tac.D num -> Const.D num, Tac.Float64 |> parseType |> fst
+                | Tac.S str ->
+                    let length = String.length str |> Int64.of_int in
+                    let null_terminated = String.ends_with ~suffix:"\x00" str in
+                        let str = if null_terminated then String.sub str 0 (String.length str - 1) else str in
+                    Const.S str, Asmt.String (length, null_terminated)
+                | Tac.ZeroInit _ -> failwith "StaticConst not implemented with zeroinit" in
+            (ro := (name, init, typ) :: !ro; iter rest)
         | [] -> ()
     in let () = match tacky with
         | Tac.Program tls -> iter tls
@@ -467,6 +506,7 @@ let replacePseudos (name, instructions, is_global) =
                 | Asmt.QuadWord -> (o16, o8+1, o4, o2, o1)
                 | Asmt.Double ->   (o16, o8+1, o4, o2, o1)
                 | Asmt.ByteArray _ -> failwith "ByteArray in replacePseudos"
+                | Asmt.String _ -> failwith "String in replacePseudos"
             end
             in let () = dict := id :: !dict in offs
 
@@ -530,6 +570,7 @@ let replacePseudos (name, instructions, is_global) =
                     | Asmt.QuadWord -> let () = offset8 := Int64.add !offset8 8L in !offset8
                     | Asmt.Double -> let () = offset8 := Int64.add !offset8 8L in !offset8
                     | Asmt.ByteArray _ -> failwith "ByteArray in replacePseudos"
+                    | Asmt.String _ -> failwith "String in replacePseudos"
                 end in
                 let operand = Asmt.Memory (Asmt.RBP, Int64.neg offset, None, None) in
                 let () = dict := ((id, operand) :: !dict) in

@@ -6,16 +6,17 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
                  And | Or | Xor | LShift | RShift |
                  Equal | NotEqual | LessThan | LessOrEqual | GreaterThan | GreaterOrEqual
 
-type typ = Int32 of bool | Int64 of bool (*is_signed*)
+type typ = Int8 of bool | Int32 of bool | Int64 of bool (*is_signed*)
          | Float64
          | Ptr of typ
          | ArrObj of typ * Int64.t
 
-type number = I of Z.t * typ
-            | D of float
-            | ZeroInit of Int64.t
+type constant = I of Z.t * typ
+              | D of float
+              | S of string
+              | ZeroInit of Int64.t
 
-type operand = Constant of number
+type operand = Constant of constant
              | Var of identifier * typ
              | StaticVar of identifier * typ
 
@@ -43,12 +44,13 @@ type instruction = Return of operand
                  | Call of identifier * operand list * operand
 
 type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list
-              | StaticVariable of string * bool(*global*) * number list * Int64.t(*size bytes*) * Int64.t(*alignment*)
-              | StaticConst of string * number list
+              | StaticVariable of string * bool(*global*) * constant list * Int64.t(*size bytes*) * Int64.t(*alignment*)
+              | StaticConst of string * constant list
 
 type program = Program of toplevel list
 
 let type_signed = function
+    | Int8 s -> s
     | Int32 s -> s
     | Int64 s -> s
     | Float64 -> failwith "Make the code so that type_signed is not used with floats"
@@ -56,8 +58,10 @@ let type_signed = function
     | ArrObj _ -> failwith "Make the code so that type_signed is not used with array objects"
 
 let rec to_ast_type = function
+    | Int8 true -> Ast.SChar
     | Int32 true -> Ast.Int
     | Int64 true -> Ast.Long
+    | Int8 false -> Ast.UChar
     | Int32 false -> Ast.UInt
     | Int64 false -> Ast.ULong
     | Float64 -> Ast.Double
@@ -69,6 +73,7 @@ let rec to_ast_type = function
 (*    | Int32 _ | Int64 _ -> false*)
 
 let number_zero typ = match typ with
+    | Int8 _ -> I (Z.zero, typ)
     | Int32 _ -> I (Z.zero, typ)
     | Int64 _ -> I (Z.zero, typ)
     | Float64 -> D Float.zero
@@ -76,6 +81,7 @@ let number_zero typ = match typ with
     | ArrObj _ -> failwith "Cannot number_zero an ArrObj"
 
 let number_zero_operand typ = match typ with
+    | Int8 _ -> Constant (I (Z.zero, typ))
     | Int32 _ -> Constant (I (Z.zero, typ))
     | Int64 _ -> Constant (I (Z.zero, typ))
     | Float64 -> StaticVar (Label.getLabelDouble Float.zero, Float64)
@@ -84,6 +90,7 @@ let number_zero_operand typ = match typ with
 
 let operand_type = function
     | Constant D _ -> Float64
+    | Constant S _ -> Ptr (Int8 true)
     | Constant I (_, t)
     | Var (_, t)
     | StaticVar (_, t) -> t
@@ -115,6 +122,8 @@ let binary_op_str = function
     | GreaterOrEqual -> "GE"
 
 let rec typ_str = function
+    | Int8 false -> "int8"
+    | Int8 true -> "uint8"
     | Int32 false -> "uint32"
     | Int32 true -> "int32"
     | Int64 false -> "uint64"
@@ -123,14 +132,15 @@ let rec typ_str = function
     | Ptr x -> (typ_str x)^"_ptr"
     | ArrObj (x, s) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
 
-let number_str = function
+let constant_str = function
     | I (n, typ) -> (typ_str typ) ^ " " ^ Z.to_string n
     | D n -> (typ_str Float64) ^ " " ^ Float.to_string n
+    | S str -> "StringLiteral " ^ str
     | ZeroInit s -> "ZeroInit " ^ (Int64.to_string s)
 
 let operand_str oper =
     match oper with
-        | Constant num -> "$" ^ (number_str num)
+        | Constant num -> "$" ^ (constant_str num)
         | Var (id, typ) -> "%(" ^ (typ_str typ) ^ " " ^ id ^ ")"
         | StaticVar (lbl, typ) -> "%%("^ (typ_str typ) ^ " " ^ lbl^")"
 
@@ -166,9 +176,9 @@ let toplevel_str tl =
             (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.map (fun (n, t) -> n^":"^(typ_str t)) params))^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
         | StaticVariable (name, is_global, init, _, _) ->
-            (if is_global then "global " else "") ^ name ^ " = " ^ String.concat ", " (List.map number_str init)
+            (if is_global then "global " else "") ^ name ^ " = " ^ String.concat ", " (List.map constant_str init)
         | StaticConst (name, init) ->
-            name ^ " = " ^ String.concat ", " (List.map number_str init)
+            name ^ " = " ^ String.concat ", " (List.map constant_str init)
 
 
 

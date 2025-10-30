@@ -100,6 +100,7 @@ let process_declarator tokens base_type type_parser expr_parser =
 
     in let isTypeSpec = function
         | L.DOUBLE
+        | L.CHAR
         | L.INT
         | L.UNSIGNED
         | L.SIGNED

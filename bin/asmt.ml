@@ -6,6 +6,7 @@ type translationUnitIdentifiersDict = unit Environment.Env.t
 
 type assembly_type = Byte | Word | LongWord | QuadWord | Double
                    | ByteArray of Int64.t * Int64.t (* size * align *)
+                   | String of Int64.t * bool (* size * null_terminated *)
 
 type cond_code = E | NE | G | GE | L | LE | A | AE | B | BE | P | NP
 
@@ -64,8 +65,8 @@ type instruction = Mov of assembly_type * operand * operand
 
 type func = string * instruction list * bool
 type bss = string * assembly_type * bool
-type data = string * assembly_type(*alignment*) * (Const.number * assembly_type) list * bool
-type ro = string * Const.number * assembly_type
+type data = string * assembly_type(*alignment*) * (Const.result * assembly_type) list * bool
+type ro = string * Const.result * assembly_type
 
 type program = func list * bss list * data list * ro list
 
@@ -94,6 +95,7 @@ let type_to_size = function
     | QuadWord -> 8
     | Double -> 8
     | ByteArray (s, _) -> Int64.to_int s
+    | String (s, _) -> Int64.to_int s
 
 let type_to_align = function
     | Byte -> 1
@@ -102,6 +104,7 @@ let type_to_align = function
     | QuadWord -> 8
     | Double -> 8
     | ByteArray (_, a) -> Int64.to_int a
+    | String _ -> 1
 
 let type_to_string ?(decimal=false) = function
     | Byte -> "byte"
@@ -111,6 +114,7 @@ let type_to_string ?(decimal=false) = function
     | Double when decimal -> "quad"
     | Double -> "double"
     | ByteArray _ -> "zero"
+    | String (_, null_terminated) -> if null_terminated then "asciz" else "ascii"
 
 let register_str reg = function
      | Byte -> (match reg with
@@ -190,6 +194,7 @@ let register_str reg = function
         | RAX | RCX | RDX | RDI | RSI | RBP | RSP | R8 | R9 | R10 | R11 -> failwith "Cannot use general register with double."
     )
     | ByteArray _ -> failwith "Cannot use ByteArray with registers."
+    | String _ -> failwith "Cannot use String with registers."
 
 let p ?(packed=false) t = match t with
     | Byte -> "b"
@@ -197,7 +202,8 @@ let p ?(packed=false) t = match t with
     | LongWord -> "l"
     | QuadWord -> "q"
     | Double -> if packed then "pd" else "sd"
-    | ByteArray _ -> failwith "Cannout use p() with ByteArray."
+    | ByteArray _ -> failwith "Cannot use p() with ByteArray."
+    | String _ -> failwith "Cannot use p() with String."
 
 let unop_str op typ = (match op with
     | Neg -> "neg"
@@ -265,6 +271,7 @@ let instruction_str inst externalNames =
         | SignExtend QuadWord -> "cqo"
         | SignExtend Double -> failwith "Can't SignExtend double."
         | SignExtend ByteArray _ -> failwith "Can't SignExtend ByteArray."
+        | SignExtend String _ -> failwith "Can't SignExtend String"
         | Jmp lbl -> "jmp\t" ^ lbl
         | JmpCC (cc, lbl) -> "j"^(cond_code_str cc)^"\t" ^ lbl
         | SetCC (cc, d) -> "set"^(cond_code_str cc)^"\t" ^ (operand_str Byte d en)

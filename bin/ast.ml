@@ -1,7 +1,7 @@
 
 type identifier = string
 
-type data_type = Int | Long | UInt | ULong | Double
+type data_type = Char | SChar | UChar | Int | Long | UInt | ULong | Double
                | Ptr of data_type
                | Array of data_type * Int64.t
                | FunType of data_type list * data_type (*used in declaration parsing*)
@@ -21,6 +21,7 @@ type binary_op_sp = LogAnd | LogOr | Comma
 
 type typed_expr = data_type * expr
 and expr = Literal of lit
+         | String of string
          | Var of identifier * var_type
          | Cast of data_type * typed_expr
          | Unary of unary_op * typed_expr
@@ -34,7 +35,8 @@ and expr = Literal of lit
          | Ternary of typed_expr_sp * typed_expr * typed_expr
          | Call of identifier * typed_expr list
 
-and lit = Int32 of Int32.t | Int64 of Int64.t | UInt32 of Int32.t | UInt64 of Int64.t
+and lit = Int8 of int | Int32 of Int32.t | Int64 of Int64.t
+        | UInt8 of int | UInt32 of Int32.t | UInt64 of Int64.t
         | Float64 of float
 
 and postfix = stmt list
@@ -81,6 +83,9 @@ type toplevel = decl
 type program = Program of toplevel list
 
 let init_zero = function
+    | Char -> Int8 0
+    | SChar -> Int8 0
+    | UChar -> UInt8 0
     | Int -> Int32 0l
     | UInt -> UInt32 0l
     | Long -> Int64 0L
@@ -91,6 +96,9 @@ let init_zero = function
     | FunType _ -> failwith "Cannot use int_zero with funType."
 
 let size = function
+    | Char -> 1
+    | SChar -> 1
+    | UChar -> 1
     | Int -> 4
     | UInt -> 4
     | Long -> 8
@@ -101,6 +109,9 @@ let size = function
     | FunType _ -> failwith "Don't use size() with func"
 
 let rec indexing_size = function
+    | Char -> 1L
+    | SChar -> 1L
+    | UChar -> 1L
     | Int -> 4L
     | UInt -> 4L
     | Long -> 8L
@@ -116,6 +127,9 @@ let array_scale = function
     | _ -> failwith "Cannot use array_scale with non-array or non-ptr"
 
 let rec alignment = function
+    | Char -> 1L
+    | SChar -> 1L
+    | UChar -> 1L
     | Int -> 4L
     | UInt -> 4L
     | Long -> 8L
@@ -128,6 +142,9 @@ let rec alignment = function
     | FunType _ -> failwith "Don't use alignment() with func"
 
 let aligned_size = function
+    | Char -> 1L
+    | SChar -> 1L
+    | UChar -> 1L
     | Int -> 4L
     | UInt -> 4L
     | Long -> 8L
@@ -143,24 +160,38 @@ let aligned_size = function
 
 
 let signed = function
-    | Int | Long -> true
-    | UInt | ULong -> false
+    | Char | SChar | Int | Long -> true
+    | UChar| UInt | ULong -> false
     | _ -> failwith "Cannot use with non-integral types."
 
 let isIntegral = function
-    | Int | UInt | Long | ULong -> true
+    | Char | SChar | UChar | Int | UInt | Long | ULong -> true
     | Double -> false
     | Ptr _ -> false
     | Array _ -> false
     | FunType _ -> failwith "Don't use isIntegral() with func"
 
+let isChar = function
+    | Char | SChar | UChar -> true
+    | Int | UInt | Long | ULong -> false
+    | Double -> false
+    | Ptr _ -> false
+    | Array _ -> false
+    | FunType _ -> failwith "Don't use isIntegral() with func"
+
+let isStringLiteral = function
+    | Ptr Char, String _ -> true
+    | Ptr (Array (Char, _)), String _ -> true
+    | _, String _ -> failwith "isStringLiteral -> found a string literal which is not a char ptr"
+    | _ -> false
+
 let isFloatingPoint = function
     | Double -> true
-    | Int | UInt | Long | ULong | Ptr _ | Array _ -> false
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Ptr _ | Array _ -> false
     | FunType _ -> failwith "Don't use isFloatingPoint() with func"
 
 let isScalar = function
-    | Int | UInt | Long | ULong | Double -> true
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double -> true
     | Ptr _ -> false
     | Array _ -> false
     | FunType _ -> failwith "Don't use isScalar() with func"
@@ -168,19 +199,37 @@ let isScalar = function
 let isPointer = function
     | Ptr _ -> true
     | Array _ -> false (*Sadly, not quite at the parsing-typechecking stage*)
-    | Int | UInt | Long | ULong | Double -> false
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double -> false
     | FunType _ -> failwith "Don't use isPointer() with func"
 
 let isArray = function
     | Array _ -> true
-    | Int | UInt | Long | ULong | Double | Ptr _ -> false
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ -> false
     | FunType _ -> failwith "Don't use isArray() with func"
 
 let isCompound = function
     | Array _ -> true
-    | Int | UInt | Long | ULong | Double | Ptr _ -> false
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ -> false
     | FunType _ -> failwith "Don't use isCompound() with func"
 
+let isCharArray = function
+    | Array (Char, _)
+    | Array (SChar, _)
+    | Array (UChar, _) -> true
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
+    | FunType _ -> failwith "Don't use isCompound() with func"
+
+let isCharPtr ?(forStringDecay=false) = function
+    | Ptr Char -> true
+    | Ptr SChar -> true && (not forStringDecay)
+    | Ptr UChar -> true && (not forStringDecay)
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
+    | FunType _ -> failwith "Don't use isCompound() with func"
+
+let isCharArrayPtr length = function
+    | Ptr (Array (Char, here_length)) -> length = here_length
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
+    | FunType _ -> failwith "Don't use isCompound() with func"
 
 let getPointerType = function
     | Ptr t -> t
@@ -242,6 +291,9 @@ let string_storage_specifier_opt = function
     | Some x -> string_storage_specifier x
 
 let rec string_data_type = function
+    | Char -> "char"
+    | SChar -> "signed char"
+    | UChar -> "unsigned char"
     | Int -> "int"
     | Long -> "long"
     | UInt -> "unsigned int"
@@ -252,6 +304,8 @@ let rec string_data_type = function
     | FunType (ps, r) -> (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (string_data_type r)
 
 let string_literal = function
+    | Int8 num -> ("Int8(" ^ (string_of_int num) ^ ")")
+    | UInt8 num -> ("UInt8(" ^ (string_of_int num) ^ ")")
     | Int32 num -> ("Int32(" ^ (Int32.to_string num) ^ ")")
     | Int64 num -> ("Int64(" ^ (Int64.to_string num) ^ ")")
     | UInt32 num -> ("UInt32(" ^ (Int32.to_string num) ^ ")")
@@ -263,6 +317,7 @@ let rec print_expr tabs expr =
     print_string (String.make (tabs*2) ' ');
     match expr with
         | Literal lit -> print_string (string_literal lit)
+        | String str -> print_string ("String("^str^")")
 
         | Var (id, _) -> print_string ("Var("^id^")")
 

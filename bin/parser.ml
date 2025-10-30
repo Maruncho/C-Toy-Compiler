@@ -132,13 +132,14 @@ let parse tokens =
         | 11 -> true
         | _ -> false
 
-    in let isLvalue ?(imAdressOfOperator=false) = function
-        | (_, Ast.Var (_, Ast.StaticVariable Ast.Array _)) -> imAdressOfOperator || false
-        | (_, Ast.Var (_, Ast.AutoVariable Ast.Array _)) -> imAdressOfOperator || false
+    in let isLvalue ?(imAddressOfOperator=false) = function
+        | (_, Ast.Var (_, Ast.StaticVariable Ast.Array _)) -> imAddressOfOperator || false
+        | (_, Ast.Var (_, Ast.AutoVariable Ast.Array _)) -> imAddressOfOperator || false
         | (_, Ast.Var (_, Ast.StaticVariable _)) -> true
         | (_, Ast.Var (_, Ast.AutoVariable _)) -> true
         | (_, Ast.Dereference _) -> true
         | (_, Ast.Subscript _) -> true
+        | (_, Ast.String _) -> imAddressOfOperator || false
         | _ -> false
 
     in let isTernary = function
@@ -166,6 +167,7 @@ let parse tokens =
 
     in let isTypeSpec = function
         | L.DOUBLE
+        | L.CHAR
         | L.INT
         | L.UNSIGNED
         | L.SIGNED
@@ -202,6 +204,8 @@ let parse tokens =
         | L.UINT32_LIT _ as tok -> parseLiteral tok
         | L.INT64_LIT _ as tok -> parseLiteral tok
         | L.UINT64_LIT _ as tok -> parseLiteral tok
+        | L.DOUBLE_LIT num -> Ast.Double, Ast.Literal (Ast.Float64 num)
+        | L.CHAR_LIT num_str -> Ast.Int, Ast.Literal (Ast.Int32 ((String.get num_str 0) |> Char.code |> Int32.of_int))
         | _ as t -> raise (ParserError ("Expected constant expression, but got " ^ (L.string_of_token t)))
 
     in let is_nullptr_constant expr =
@@ -209,6 +213,10 @@ let parse tokens =
         with _ -> false
 
     in let get_common_type t1 t2 =
+        (*chars are promoted to int*)
+        let t1 = if Ast.isChar t1 then Ast.Int else t1 in
+        let t2 = if Ast.isChar t2 then Ast.Int else t2 in
+
         if t1 = t2 then
             t1
         else if (Ast.size t1) = (Ast.size t2) then (
@@ -318,19 +326,29 @@ let parse tokens =
                 let () = default := Some lbl in ([], Ast.Default lbl)
             | Ast.Case (lit, _) ->
                 let lbl = newLabel() in
-                let num = begin match lit with
-                    | Ast.Int32 num -> Const.trunc (Z.of_int32 num) cond_type
-                    | Ast.UInt32 num -> Const.trunc (Z.of_int32_unsigned num) cond_type
-                    | Ast.Int64 num -> Const.trunc (Z.of_int64 num) cond_type
-                    | Ast.UInt64 num -> Const.trunc (Z.of_int64_unsigned num) cond_type
-                    | Ast.Float64 _ -> Z.zero
+                let num, isFloat = begin match lit with
+                    | Ast.Int8 num -> Const.trunc (Z.of_int num) Ast.Int, false
+                    | Ast.UInt8 num -> Const.trunc (Z.of_int num) Ast.Int, false
+                    | Ast.Int32 num -> Const.trunc (Z.of_int32 num) cond_type, false
+                    | Ast.UInt32 num -> Const.trunc (Z.of_int32_unsigned num) cond_type, false
+                    | Ast.Int64 num -> Const.trunc (Z.of_int64 num) cond_type, false
+                    | Ast.UInt64 num -> Const.trunc (Z.of_int64_unsigned num) cond_type, false
+                    | Ast.Float64 _ -> Z.zero, true
                 end in
                 let numFloat = begin match lit with
-                    (*Don't forget to add other floats as the _ hides warnings*)
+                    (*Don't forget to add other float types, be aware that _ hides warnings*)
                     | Ast.Float64 num -> num
                     | _ -> 0.0
                 end in
+
+                (*Quick fix. Too lazy to refactor and this code is probably not gotta be touched again in any logic-changing way*)
+                let () = if (Ast.isFloatingPoint cond_type && isFloat) || (Ast.isIntegral cond_type && (not isFloat)) then ()
+                         else raise (ParserError "Type mismatch in switch condition and a case") in
+
                 let lit = begin match cond_type with
+                    | Ast.Char -> Ast.Int32 (Z.to_int32 num)
+                    | Ast.SChar -> Ast.Int8 (Z.to_int num)
+                    | Ast.UChar -> Ast.Int8 (Z.to_int num)
                     | Ast.Int -> Ast.Int32 (Z.to_int32 num)
                     | Ast.UInt -> Ast.UInt32 (Z.to_int32_unsigned num)
                     | Ast.Long -> Ast.Int64 (Z.to_int64 num)
@@ -369,6 +387,7 @@ let parse tokens =
 
     and parse_type_spec list_opt =
         let rec iter() = match nextToken() with
+            | L.CHAR
             | L.INT
             | L.LONG
             | L.SIGNED
@@ -378,6 +397,11 @@ let parse tokens =
 
         in let lst = match list_opt with | None -> iter() | Some lst -> lst
         in if List.is_empty lst then raise (ParserError "No type specifier.") else
+
+        if lst = [L.CHAR] then Ast.Char else
+        if lst = [L.SIGNED; L.CHAR] || lst = [L.CHAR; L.SIGNED] then Ast.SChar else
+        if lst = [L.UNSIGNED; L.CHAR] || lst = [L.CHAR; L.UNSIGNED] then Ast.UChar else
+        if List.mem L.CHAR lst then raise (ParserError "Can't combine 'char' with other type specifiers") else
 
         if lst = [L.DOUBLE] then Ast.Double else
         if List.mem L.DOUBLE lst then raise (ParserError "Can't combine 'double' with other type specifiers") else
@@ -414,7 +438,7 @@ let parse tokens =
         in let (typ, storage) = iter [] None in
         (parse_type_spec (Some typ), storage)
 
-    and parse_initialiser typ env lvl =
+    and parse_initialiser typ is_static env lvl =
         let rec fill_array typ len = match len with
             | 0L -> []
             | _ -> (zeroInit typ) :: fill_array typ (Int64.sub len 1L)
@@ -426,7 +450,27 @@ let parse tokens =
             | Ast.Array (typ, length) ->
                 Ast.CompoundInit (fill_array typ length)
             | Ast.FunType _ -> failwith "Impossible."
-            | Ast.Int | Ast.Double | Ast.UInt | Ast.Long | Ast.ULong -> failwith "For OCaml to stop complaining"
+            | Ast.Char | Ast.SChar | Ast.UChar | Ast.Int | Ast.Double | Ast.UInt | Ast.Long | Ast.ULong -> failwith "For OCaml to stop complaining"
+
+        in let str_to_compound typ t_expr = match (typ, t_expr) with
+            | (Ast.Array (arr_of_typ, length), (x, Ast.String str)) ->
+                let str_length = String.length str in
+                if (Int64.of_int (str_length - 1)) > length then
+                    raise (ParserError "String initializer exceeds array length.")
+
+                else if is_static then
+                    let str, zeroes = if (Int64.of_int (str_length - 1) = length)
+                        then String.sub str 0 (str_length - 1), 0L
+                        else str, (Int64.sub length (Int64.of_int str_length))
+                    in Ast.CompoundInit ((Ast.SingleInit (x, Ast.String str)) :: (fill_array arr_of_typ zeroes))
+
+                else
+                    let init = (String.sub str 0 (str_length - 1)) |> String.to_seq |> List.of_seq |>
+                    List.map Char.code |>
+                    List.map (fun n -> Ast.SingleInit (arr_of_typ, Ast.Literal (if Ast.signed arr_of_typ then Ast.Int8 n else Ast.UInt8 n))) in
+                    Ast.CompoundInit (init @ (fill_array arr_of_typ (Int64.sub length (Int64.of_int (str_length - 1)))))
+
+            | _ -> failwith "Incorrect usage of str_to_compound in parser"
 
         in let rec parseRestOfArray typ arr_length = match nextToken() with
             | L.COMMA ->
@@ -438,7 +482,7 @@ let parse tokens =
                     if arr_length <= 0L then
                         raise (ParserError "Array Compound Initializer exceeds array length.")
                     else
-                        let init = parse_initialiser typ env lvl in
+                        let init = parse_initialiser typ is_static env lvl in
                         init :: (parseRestOfArray typ (Int64.sub arr_length 1L))
             | L.RBRACE ->
                 let _ = eatToken() in
@@ -450,13 +494,26 @@ let parse tokens =
             let _ = eatToken() in
                 if Ast.isArray typ then
                     let (typ, length) = Ast.getArrayData typ in
-                    let first_init = parse_initialiser typ env lvl in
+                    let first_init = parse_initialiser typ is_static env lvl in
                     Ast.CompoundInit (first_init :: (parseRestOfArray typ (Int64.sub length 1L)))
                 else
                     raise (ParserError ("Cannot use compound initializer with " ^ Ast.string_data_type typ))
-        | _ -> 
-            if not (Ast.isCompound typ) then
-                Ast.SingleInit (implicit_convert_to (parse_expr env lvl) typ)
+        | _ ->
+            let t_expr = parse_expr env lvl in
+
+            if Ast.isStringLiteral t_expr then
+                let str_length = match t_expr with (_, Ast.String str) -> String.length str | _ -> failwith "Impossible." in
+                if Ast.isCharArray typ then
+                    str_to_compound typ t_expr
+                else if Ast.isCharPtr ~forStringDecay:true typ then
+                    Ast.SingleInit t_expr
+                else if Ast.isCharArrayPtr (Int64.of_int str_length) typ then
+                    Ast.SingleInit t_expr
+                else
+                    raise (ParserError ("Cannot initialize a " ^ (Ast.string_data_type typ) ^ " with a string literal."))
+
+            else if not (Ast.isCompound typ) then
+                Ast.SingleInit (implicit_convert_to t_expr typ)
             else
                 raise (ParserError ("Cannot use scalar initializer with " ^ Ast.string_data_type typ))
 
@@ -475,7 +532,8 @@ let parse tokens =
 
         let initialiser = match nextToken() with
             | L.ASSIGN -> let _ = eatToken() in
-                          Some (parse_initialiser typ initEnv lvl)
+                          let is_static = storage = Some Ast.Static || lvl = 0 in
+                          Some (parse_initialiser typ is_static initEnv lvl)
             | _ -> None
 
         in let (newEnv, gEnv) = try Environment.tryAddVariable env !globalEnv lvl storage id newId initialiser typ
@@ -579,10 +637,12 @@ let parse tokens =
             let () = expect L.RPAREN in
             let postfixAfterCond = flushPostfix() in
             let stmt = list_to_stmt (parse_stmt env lvl fn_return_type) in
-            let (cases, body, default_opt) = parse_switch_body stmt (typ cond) in
+            let promoted_cond_typ = if Ast.isChar (typ cond) then Ast.Int else (typ cond) in
+            let promoted_cond = explicit_convert_to cond promoted_cond_typ in
+            let (cases, body, default_opt) = parse_switch_body stmt promoted_cond_typ in
             let break = newLabel() in
             let default = (match default_opt with None -> break | Some d -> d) in
-            [Ast.Switch ((cond, postfixAfterCond), List.rev cases, body, break, default)]
+            [Ast.Switch ((promoted_cond, postfixAfterCond), List.rev cases, body, break, default)]
 
         | L.WHILE ->
             let _ = eatToken() in
@@ -663,6 +723,13 @@ let parse tokens =
             | L.INT64_LIT _ as tok -> parseLiteral tok
             | L.UINT64_LIT _ as tok -> parseLiteral tok
             | L.DOUBLE_LIT num -> Ast.Double, Ast.Literal (Ast.Float64 num)
+            | L.CHAR_LIT num_str -> Ast.Int, Ast.Literal (Ast.Int32 ((String.get num_str 0) |> Char.code |> Int32.of_int))
+            | L.STRING_LIT str ->
+                let rec iter acc = match nextToken() with
+                    | L.STRING_LIT str -> let _ = eatToken() in iter (acc ^ str)
+                    | _ -> acc ^ "\x00"
+                in let str = iter str in
+                (Ast.Ptr Ast.Char), Ast.String str
             | L.LPAREN -> let expr = parse_expr ~arr_decay:arr_decay env lvl in
                           let () = expect L.RPAREN in
                           expr
@@ -704,7 +771,6 @@ let parse tokens =
                 iter (nextToken()) (retType, Ast.Call (id, args))
 
             | L.LBRACK ->
-                (*let left = decay_arr left in (*annoying bug. But AddressOf doesn't decay arrays, unless they are in the parent expression*)*)
                 let _ = eatToken() in
                 let right = parse_expr env lvl in
                 let () = expect L.RBRACK in
@@ -735,14 +801,17 @@ let parse tokens =
     and parse_unary ?(arr_decay=true) env lvl = match nextToken() with
         | L.PLUS -> let _ = eatToken() in
                     let typed_expr = parse_unary env lvl in
+                    let typed_expr = if Ast.isChar (typ typed_expr) then explicit_convert_to typed_expr Ast.Int else typed_expr in
                     if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't unary plus a pointer") else
                     (typ typed_expr, Ast.Unary (Ast.Rvalue, typed_expr))
         | L.MINUS -> let _ = eatToken() in
                      let typed_expr = parse_unary env lvl in
+                    let typed_expr = if Ast.isChar (typ typed_expr) then explicit_convert_to typed_expr Ast.Int else typed_expr in
                      if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't negate a pointer") else
                      (typ typed_expr, Ast.Unary (Ast.Negate, typed_expr))
         | L.COMPLEMENT -> let _ = eatToken() in
                           let typed_expr = parse_unary env lvl in
+                          let typed_expr = if Ast.isChar (typ typed_expr) then explicit_convert_to typed_expr Ast.Int else typed_expr in
                           if Ast.isFloatingPoint (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a floating point expression") else
                           if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a pointer") else
                           (typ typed_expr, Ast.Unary (Ast.Complement, typed_expr))
@@ -763,8 +832,12 @@ let parse tokens =
                             | (_, Ast.Subscript (ptr, index)) ->
                                 (typ ptr, Ast.Binary (Ast.PtrAdd, ptr, index))
                             | (typ, _) ->
-                                if (isLvalue ~imAdressOfOperator:true typed_expr) then
-                                    (Ast.Ptr typ, Ast.AddressOf typed_expr)
+                                if (isLvalue ~imAddressOfOperator:true typed_expr) then
+                                    if Ast.isStringLiteral typed_expr then
+                                        let str = (match typed_expr with (_, Ast.String str) -> str | _ -> failwith "Impossible.") in
+                                        (Ast.Ptr (Ast.Array (Ast.Char, Int64.of_int (String.length str))), snd typed_expr)
+                                    else
+                                        (Ast.Ptr typ, Ast.AddressOf typed_expr)
                                 else
                                     raise (ParserError "Cannot addressOf a non-lvalue.")
                         end
@@ -871,12 +944,14 @@ let parse tokens =
                 else if isShift p then
                     let op = eatToken() |> parseOp in
                     let typ_left = (typ left) in
+                    let typ_left = if Ast.isChar typ_left then Ast.Int else typ_left in
                     let right = parse_expr ~min_prec:(p+1) env lvl in
                     if (typ right) = Ast.Double || typ_left = Ast.Double then raise (ParserError "Can't use double as rhs of a shift operator.") else
-                     if (Ast.isPointer (typ right) || Ast.isPointer typ_left) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                    if (Ast.isPointer (typ right) || Ast.isPointer typ_left) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                    let new_left = explicit_convert_to left typ_left in
                     let new_right = explicit_convert_to right typ_left
 
-                    in iter (nextToken()) (typ_left, Ast.Binary (op, left, new_right))
+                    in iter (nextToken()) (typ_left, Ast.Binary (op, new_left, new_right))
 
                 else
                     let op = eatToken() |> parseOp in
