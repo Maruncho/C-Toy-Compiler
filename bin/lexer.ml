@@ -17,6 +17,7 @@ type token =
     | SIGNED
     | UNSIGNED
     | DOUBLE
+    | SIZEOF
     | VOID
     | IF
     | ELSE
@@ -92,6 +93,7 @@ let string_of_token = function
     | SIGNED -> "signed"
     | UNSIGNED -> "unsigned"
     | DOUBLE -> "double"
+    | SIZEOF -> "sizeof"
     | VOID -> "void"
     | IF -> "if"
     | ELSE -> "else"
@@ -187,6 +189,7 @@ let token_regexes =
         | "signed" -> SIGNED
         | "unsigned" -> UNSIGNED
         | "double" -> DOUBLE
+        | "sizeof" -> SIZEOF
         | "void" -> VOID
         | "if" -> IF
         | "else" -> ELSE

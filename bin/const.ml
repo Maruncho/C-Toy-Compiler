@@ -76,6 +76,7 @@ let truncWrapper num typ = match typ with
     | Ast.Ptr _ -> num (*failwith "Impossible ptr in const.ml"*)
     | Ast.Array _ -> num
     | Ast.FunType _ -> failwith "Impossible func in const.ml"
+    | Ast.Void -> failwith "Impossible void in const.ml"
 
 
 let assert_fit num typ =
@@ -99,6 +100,7 @@ let assert_fit num typ =
         | Ast.Ptr _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
         | Ast.Array _ -> true, "ulong" (*failwith "Impossible ptr in const.ml"*)
         | Ast.FunType _ -> failwith "Impossible func in const.ml"
+        | Ast.Void -> failwith "Impossible void in const.ml"
     in if not r then failwith ("DEBUG ASSERT: Number " ^ (Z.to_string integer) ^ " doesn't fit in " ^ typ_str ^ ".")
     else num
 
@@ -224,6 +226,15 @@ let parseConstExpr typed_expr =
 
             | (_, Ast.Call (_, _)) ->
                 raise (ConstError "Cannot call functions in constant expresisons")
+
+            | (_, SizeOf ((typ, _) as t_expr)) ->
+                (*let _ = parse t_expr seen in (*const check*)*)
+                begin match t_expr with
+                    | _, Ast.String str -> I (Z.of_int (String.length str))
+                    | _ -> I (Z.of_int64 (Ast.indexing_size (typ)))
+                end
+            | (_, SizeOfT typ) ->
+                I (Z.of_int64 (Ast.indexing_size (typ)))
 
     in let result = try parse typed_expr []
     with | Z.Overflow -> raise (ConstError "Constant expression number conversion failed somewhere.")

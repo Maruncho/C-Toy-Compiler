@@ -75,6 +75,7 @@ let process_abstract_declarator tokens base_type expr_parser =
             let derived_type = Ast.Ptr base_type in
             (process_abstract_declarator subDecl derived_type)
         | AbstractArray (subDecl, size) ->
+            if not (Ast.isComplete base_type) then raise (ParserDeclaratorError "Can't declare an array of incomplete type") else
             let derived_type = Ast.Array (base_type, size) in
             (process_abstract_declarator subDecl derived_type)
 
@@ -92,6 +93,9 @@ let process_declarator tokens base_type type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
+    in let nextNextToken() = match !tokens with
+            | _ :: t :: _ -> t
+            | _ -> failwith "Went beyond EOF"
     in let eatToken() = match !tokens with
             | [] -> failwith "Trying to eat beyond EOF"
             | h :: t -> let () = tokens := t in h
@@ -99,6 +103,7 @@ let process_declarator tokens base_type type_parser expr_parser =
                              raise (ParserDeclaratorError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
     in let isTypeSpec = function
+        | L.VOID
         | L.DOUBLE
         | L.CHAR
         | L.INT
@@ -121,7 +126,7 @@ let process_declarator tokens base_type type_parser expr_parser =
             | L.LPAREN ->
                 let _ = eatToken() in
                 let r =
-                    if nextToken() = L.VOID then
+                    if nextToken() = L.VOID && nextNextToken() = L.RPAREN then
                         let _ = eatToken() in
                         FunDeclarator ([], simple)
                     else
@@ -154,6 +159,7 @@ let process_declarator tokens base_type type_parser expr_parser =
     and parseParamList() = match nextToken() with
             | x when isTypeSpec x ->
                 let typ = type_parser() in
+
                 let decl = parseDeclarator() in
 
                 if nextToken() = L.COMMA then
@@ -170,12 +176,14 @@ let process_declarator tokens base_type type_parser expr_parser =
             let derived_type = Ast.Ptr base_type in
             (process_declarator subDecl derived_type)
         | ArrayDeclarator (subDecl, size) ->
+            if not (Ast.isComplete base_type) then raise (ParserDeclaratorError "Can't declare an array of incomplete type") else
             let derived_type = Ast.Array (base_type, size) in
             (process_declarator subDecl derived_type)
         | FunDeclarator (params, subDecl) -> begin match subDecl with
             | Ident name ->
                 let (p_types, p_names) = List.fold_left (fun (acc_types, acc_names) (param_t, param_decl) -> (
                     let name, typ, _ = process_declarator param_decl param_t in
+                    if typ = Ast.Void then raise (ParserDeclaratorError "Cannot declare void parameters.") else
                     let () = begin match typ with
                         | Ast.FunType _ -> raise (ParserDeclaratorError "Function pointers in parameters aren't supported")
                         | _ -> ()

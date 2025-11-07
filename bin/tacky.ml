@@ -10,6 +10,7 @@ type typ = Int8 of bool | Int32 of bool | Int64 of bool (*is_signed*)
          | Float64
          | Ptr of typ
          | ArrObj of typ * Int64.t
+         | Void
 
 type constant = I of Z.t * typ
               | D of float
@@ -20,7 +21,7 @@ type operand = Constant of constant
              | Var of identifier * typ
              | StaticVar of identifier * typ
 
-type instruction = Return of operand
+type instruction = Return of operand option
                  | SignExtend of operand * operand
                  | ZeroExtend of operand * operand
                  | FloatToInt of operand * operand
@@ -41,7 +42,7 @@ type instruction = Return of operand
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
-                 | Call of identifier * operand list * operand
+                 | Call of identifier * operand list * operand option
 
 type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list
               | StaticVariable of string * bool(*global*) * constant list * Int64.t(*size bytes*) * Int64.t(*alignment*)
@@ -56,6 +57,7 @@ let type_signed = function
     | Float64 -> failwith "Make the code so that type_signed is not used with floats"
     | Ptr _ -> failwith "Make the code so that type_signed is not used with pointers"
     | ArrObj _ -> failwith "Make the code so that type_signed is not used with array objects"
+    | Void -> failwith "Make the code so that type_signed is not used with voids"
 
 let rec to_ast_type = function
     | Int8 true -> Ast.SChar
@@ -67,6 +69,7 @@ let rec to_ast_type = function
     | Float64 -> Ast.Double
     | Ptr x -> Ast.Ptr (to_ast_type x)
     | ArrObj (x, s) -> Ast.Array (to_ast_type x, s)
+    | Void -> Ast.Void
 
 (*let type_float = function*)
 (*    | Float64 -> true*)
@@ -79,6 +82,7 @@ let number_zero typ = match typ with
     | Float64 -> D Float.zero
     | Ptr _ -> I (Z.zero, Int64 false)
     | ArrObj _ -> failwith "Cannot number_zero an ArrObj"
+    | Void -> failwith "Cannot number_zero a void"
 
 let number_zero_operand typ = match typ with
     | Int8 _ -> Constant (I (Z.zero, typ))
@@ -87,6 +91,7 @@ let number_zero_operand typ = match typ with
     | Float64 -> StaticVar (Label.getLabelDouble Float.zero, Float64)
     | Ptr _ -> Constant (I (Z.zero, Int64 false))
     | ArrObj _ -> failwith "Cannot number_zero_operand an ArrObj"
+    | Void -> Constant (I (Z.zero, typ))
 
 let operand_type = function
     | Constant D _ -> Float64
@@ -131,6 +136,7 @@ let rec typ_str = function
     | Float64 -> "float64"
     | Ptr x -> (typ_str x)^"_ptr"
     | ArrObj (x, s) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
+    | Void -> "void"
 
 let constant_str = function
     | I (n, typ) -> (typ_str typ) ^ " " ^ Z.to_string n
@@ -147,7 +153,8 @@ let operand_str oper =
 let instruction_str inst =
     "\t" ^
     match inst with
-        | Return opr -> "Return("^(operand_str opr)^")\n"
+        | Return None -> "Return(void)\n"
+        | Return (Some opr) -> "Return("^(operand_str opr)^")\n"
         | SignExtend (s, d) -> "SignExtend("^(operand_str s)^", "^(operand_str d)^")\n"
         | ZeroExtend (s, d) -> "ZeroExtend("^(operand_str s)^", "^(operand_str d)^")\n"
         | FloatToInt (s, d) -> "DoubleToInt("^(operand_str s)^", "^(operand_str d)^")\n"
@@ -168,7 +175,8 @@ let instruction_str inst =
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
         | Label lbl -> "Label("^lbl^")\n"
-        | Call (name, params, dst) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
+        | Call (name, params, Some dst) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
+        | Call (name, params, None) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
 
 let toplevel_str tl =
     match tl with

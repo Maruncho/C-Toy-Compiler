@@ -123,6 +123,8 @@ let parseType typ =
         | Tac.Float64 -> Asmt.Double, false
         | Tac.Ptr _ -> Asmt.QuadWord, false
         | Tac.ArrObj (typ, s) -> Asmt.ByteArray (s, typ |> Tac.to_ast_type |> Ast.alignment), false
+        (*| Tac.Void -> failwith "Void should not reach the assembler"*)
+        | Tac.Void -> Asmt.LongWord, true
 
 let classify_parameters typs =
     let rec iter typs i f s = match typs with
@@ -155,6 +157,7 @@ let classify_parameters typs =
             )
             in (fst (parseType typ), reg) :: iter t i f s
         | Tac.ArrObj _ :: _ -> failwith "Function parameters cannot be ArrObjs"
+        | Tac.Void :: _ -> failwith "Function parameters cannot be voids"
 
     in iter typs 1 1 1
 
@@ -177,7 +180,8 @@ let parseOperand ?(offset=None) opr =
 
 let rec parseInstruction inst =
     match inst with
-        | Tac.Return d ->
+        | Tac.Return None -> [Asmt.Ret]
+        | Tac.Return (Some d) ->
             let ((typ,_), d) = parseOperand d in
             let dst_reg = if typ = Asmt.Double then Asmt.XMM0 else Asmt.RAX in
            [
@@ -440,12 +444,19 @@ let rec parseInstruction inst =
                 (List.rev inStack) |> List.flatten in
             let stackInstrs = if extraPadding then (Asmt.AllocateStack 8L) :: stackInstrs else stackInstrs in
 
-            let (dst_type, dst) = parseOperand dst in
-            let dst_reg = if fst dst_type = Asmt.Double then Asmt.XMM0 else Asmt.RAX in
-            let callInstrs = [Asmt.Call (name);
-                              Asmt.DeallocateStack deallocSize;
-                              Asmt.Mov(fst dst_type, Asmt.Reg dst_reg, dst)] in
-            regInstrs @ stackInstrs @ callInstrs
+            let callInstrs = match dst with
+            | Some dst ->
+                let (dst_type, dst) = parseOperand dst in
+                let dst_reg = if fst dst_type = Asmt.Double then Asmt.XMM0 else Asmt.RAX in
+                [Asmt.Call (name);
+                 Asmt.DeallocateStack deallocSize;
+                 Asmt.Mov(fst dst_type, Asmt.Reg dst_reg, dst)]
+            | None ->
+                [Asmt.Call (name);
+                 Asmt.DeallocateStack deallocSize]
+
+            in regInstrs @ stackInstrs @ callInstrs
+
 
 let parseProgram tacky =
     let func = ref [] in

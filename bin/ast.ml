@@ -4,6 +4,7 @@ type identifier = string
 type data_type = Char | SChar | UChar | Int | Long | UInt | ULong | Double
                | Ptr of data_type
                | Array of data_type * Int64.t
+               | Void
                | FunType of data_type list * data_type (*used in declaration parsing*)
 
 type var_type = AutoVariable of data_type
@@ -34,6 +35,8 @@ and expr = Literal of lit
          | Assignment of typed_expr * typed_expr
          | Ternary of typed_expr_sp * typed_expr * typed_expr
          | Call of identifier * typed_expr list
+         | SizeOf of typed_expr
+         | SizeOfT of data_type
 
 and lit = Int8 of int | Int32 of Int32.t | Int64 of Int64.t
         | UInt8 of int | UInt32 of Int32.t | UInt64 of Int64.t
@@ -51,7 +54,7 @@ and for_init = InitDecl of var_decl_sp | InitExpr of typed_expr_sp
 
 and case = lit * identifier (*case <expr>: -> <label> *)
 
-and stmt = Return of typed_expr
+and stmt = Return of typed_expr option
          | Expression of typed_expr
          | If of typed_expr_sp * stmt * stmt option
          | Compound of block
@@ -91,9 +94,10 @@ let init_zero = function
     | Long -> Int64 0L
     | ULong -> UInt64 0L
     | Double -> Float64 0.0
-    | Ptr _ -> failwith "Cannot use int_zero with ptr."
-    | Array _ -> failwith "Cannot use int_zero with arr."
-    | FunType _ -> failwith "Cannot use int_zero with funType."
+    | Ptr _ -> failwith "Cannot use init_zero with ptr."
+    | Array _ -> failwith "Cannot use init_zero with arr."
+    | Void -> failwith "Cannot use init_zero with void."
+    | FunType _ -> failwith "Cannot use init_zero with funType."
 
 let size = function
     | Char -> 1
@@ -106,6 +110,7 @@ let size = function
     | Double -> 100_8
     | Ptr _ -> failwith "Don't use size() with ptr"
     | Array _ -> failwith "Don't use size() with array"
+    | Void -> failwith "Don't use size() with void"
     | FunType _ -> failwith "Don't use size() with func"
 
 let rec indexing_size = function
@@ -120,6 +125,7 @@ let rec indexing_size = function
     | Ptr _ -> 8L
     | Array (typ, size) -> Int64.mul (indexing_size typ) size
     | FunType _ -> failwith "Don't use indexing_size() with func"
+    | Void -> failwith "Don't use indexing_size() with void"
 
 let array_scale = function
     | Array (typ, _) -> indexing_size typ
@@ -140,6 +146,7 @@ let rec alignment = function
                              then 16L
                              else alignment typ
     | FunType _ -> failwith "Don't use alignment() with func"
+    | Void -> failwith "Don't use alignment() with void"
 
 let aligned_size = function
     | Char -> 1L
@@ -157,6 +164,7 @@ let aligned_size = function
         let modulo = Int64.rem size align in
         if Int64.equal modulo 0L then size else Int64.add size (Int64.sub align modulo)
     | FunType _ -> failwith "Don't use indexing_size() with func"
+    | Void -> failwith "Don't use indexing_size() with void"
 
 
 let signed = function
@@ -170,6 +178,7 @@ let isIntegral = function
     | Ptr _ -> false
     | Array _ -> false
     | FunType _ -> failwith "Don't use isIntegral() with func"
+    | Void -> false
 
 let isChar = function
     | Char | SChar | UChar -> true
@@ -178,6 +187,7 @@ let isChar = function
     | Ptr _ -> false
     | Array _ -> false
     | FunType _ -> failwith "Don't use isIntegral() with func"
+    | Void -> false
 
 let isStringLiteral = function
     | Ptr Char, String _ -> true
@@ -189,11 +199,13 @@ let isFloatingPoint = function
     | Double -> true
     | Char | SChar | UChar | Int | UInt | Long | ULong | Ptr _ | Array _ -> false
     | FunType _ -> failwith "Don't use isFloatingPoint() with func"
+    | Void -> false
 
 let isScalar = function
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double -> true
-    | Ptr _ -> false
+    | Ptr _ -> true
     | Array _ -> false
+    | Void -> false
     | FunType _ -> failwith "Don't use isScalar() with func"
 
 let isPointer = function
@@ -201,35 +213,51 @@ let isPointer = function
     | Array _ -> false (*Sadly, not quite at the parsing-typechecking stage*)
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double -> false
     | FunType _ -> failwith "Don't use isPointer() with func"
+    | Void -> false
 
 let isArray = function
     | Array _ -> true
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ -> false
     | FunType _ -> failwith "Don't use isArray() with func"
+    | Void -> false
 
 let isCompound = function
     | Array _ -> true
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ -> false
     | FunType _ -> failwith "Don't use isCompound() with func"
+    | Void -> false
+
+let rec isComplete = function
+    | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _-> true
+    | Void -> false
+    | Array (x, _) -> isComplete x
+    | FunType _ -> failwith "Don't use isComplete() with func"
+
+let isPtrToComplete = function
+    | Ptr x -> isComplete x
+    | _ -> failwith "Don't use isPtrToComplete() with non-pointer"
 
 let isCharArray = function
     | Array (Char, _)
     | Array (SChar, _)
     | Array (UChar, _) -> true
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
-    | FunType _ -> failwith "Don't use isCompound() with func"
+    | FunType _ -> failwith "Don't use isCharArray() with func"
+    | Void -> false
 
 let isCharPtr ?(forStringDecay=false) = function
     | Ptr Char -> true
     | Ptr SChar -> true && (not forStringDecay)
     | Ptr UChar -> true && (not forStringDecay)
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
-    | FunType _ -> failwith "Don't use isCompound() with func"
+    | FunType _ -> failwith "Don't use isCharPtr() with func"
+    | Void -> false
 
 let isCharArrayPtr length = function
     | Ptr (Array (Char, here_length)) -> length = here_length
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double | Ptr _ | Array _ -> false
-    | FunType _ -> failwith "Don't use isCompound() with func"
+    | FunType _ -> failwith "Don't use isCharArrayPtr() with func"
+    | Void -> false
 
 let getPointerType = function
     | Ptr t -> t
@@ -301,6 +329,7 @@ let rec string_data_type = function
     | Double -> "double"
     | Ptr r -> (string_data_type r) ^ "*"
     | Array (r, s) -> (string_data_type r) ^ "[" ^ (Int64.to_string s) ^ "]"
+    | Void -> "void"
     | FunType (ps, r) -> (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (string_data_type r)
 
 let string_literal = function
@@ -379,6 +408,16 @@ let rec print_expr tabs expr =
             List.iter (fun x -> print_typed_expr (tabs+1) x; print_string "\n") args;
             print_string (")")
 
+        | SizeOf expr ->
+            print_string ("SizeOf(\n");
+            print_typed_expr (tabs+1) expr; print_string "\n";
+            print_string (")")
+
+        | SizeOfT typ ->
+            print_string ("SizeOfT(\n");
+            print_string ((string_data_type typ)^"\n");
+            print_string (")")
+
 and print_typed_expr tabs (typ, expr) =
     print_string (String.make (tabs*2) ' ');
     print_string ((string_data_type typ)^" ");
@@ -388,7 +427,10 @@ and print_typed_expr tabs (typ, expr) =
 and print_stmt tabs stmt =
     print_string (String.make (tabs*2) ' ');
     match stmt with
-        | Return expr -> print_string "Return(\n"; (print_typed_expr (tabs+1) expr); print_string ")\n"
+        | Return expr_opt ->
+            print_string "Return(\n";
+            if Option.is_some expr_opt then print_typed_expr (tabs+1) (Option.get expr_opt);
+            print_string ")\n"
         | Expression typed_expr -> print_string "Expression(\n"; (print_typed_expr (tabs+1) typed_expr); print_string ")\n"
         | If ((cond, postfix), th, Some el) ->
             print_string "If(\n";
