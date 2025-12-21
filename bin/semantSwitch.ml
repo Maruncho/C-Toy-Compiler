@@ -8,10 +8,27 @@ let compare n1 n2 = match n1, n2 with
     | Const.I n1, Const.I n2 -> Z.compare n1 n2
 
     | Const.I _, Const.S _
+    | Const.I _, Const.SLab _
     | Const.D _, Const.S _
+    | Const.D _, Const.SLab _
+    | Const.Z _, Const.S _
+    | Const.Z _, Const.SLab _
     | Const.S _, Const.I _
+    | Const.SLab _, Const.I _
     | Const.S _, Const.D _
+    | Const.SLab _, Const.D _
+    | Const.S _, Const.Z _
+    | Const.SLab _, Const.Z _
+    | Const.S _, Const.SLab _
+    | Const.SLab _, Const.S _
+    | Const.SLab _, Const.SLab _
     | Const.S _, Const.S _ -> failwith "Don't use SemantSwitch compare with string literals"
+
+    | Const.I _, Const.Z _
+    | Const.D _, Const.Z _
+    | Const.Z _, Const.I _
+    | Const.Z _, Const.D _
+    | Const.Z _, Const.Z _ -> failwith "Don't use SemantSwitch compare with zeroInit"
 
 module Env = Set.Make(struct type t = Const.result let compare = compare end)
 

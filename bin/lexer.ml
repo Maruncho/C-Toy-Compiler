@@ -17,6 +17,10 @@ type token =
     | SIGNED
     | UNSIGNED
     | DOUBLE
+    | STRUCT
+    | UNION
+    | DOT
+    | ARROW
     | SIZEOF
     | VOID
     | IF
@@ -48,6 +52,7 @@ type token =
     | SLASH
     | PERCENT
     | AMPERSAND
+    | AMPERRISK
     | PIPE
     | CARET
     | LSHIFT
@@ -93,6 +98,10 @@ let string_of_token = function
     | SIGNED -> "signed"
     | UNSIGNED -> "unsigned"
     | DOUBLE -> "double"
+    | STRUCT -> "struct"
+    | UNION -> "union"
+    | DOT -> "."
+    | ARROW -> "->"
     | SIZEOF -> "sizeof"
     | VOID -> "void"
     | IF -> "if"
@@ -124,6 +133,7 @@ let string_of_token = function
     | SLASH -> "/"
     | PERCENT -> "%"
     | AMPERSAND -> "&"
+    | AMPERRISK -> "&*"
     | PIPE -> "|"
     | CARET -> "^"
     | LSHIFT -> "<<"
@@ -156,6 +166,7 @@ let string_of_token = function
 
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
 let reLiteral regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|([^\w.](?:.|\s)*)|}] |> Re.compile
+let reDot regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|([^\d](?:.|\s)*)|}] |> Re.compile
 
 let rec unescape_unOCamlable str =
     if String.length str < 2 then str else
@@ -189,6 +200,8 @@ let token_regexes =
         | "signed" -> SIGNED
         | "unsigned" -> UNSIGNED
         | "double" -> DOUBLE
+        | "struct" -> STRUCT
+        | "union" -> UNION
         | "sizeof" -> SIZEOF
         | "void" -> VOID
         | "if" -> IF
@@ -313,6 +326,9 @@ let token_regexes =
     (* -- *)
     (re {|(--)|}, (fun _ -> DECREMENT))
 ;
+    (* -> *)
+    (re {|(->)|}, (fun _ -> ARROW))
+;
     (* - *)
     (re {|(-)|}, (fun _ -> MINUS))
 ;
@@ -327,6 +343,9 @@ let token_regexes =
 ;
     (* % *)
     (re {|(%)|}, (fun _ -> PERCENT))
+;
+    (* &* *)
+    (re {|(&\*)|}, (fun _ -> AMPERRISK))
 ;
     (* & *)
     (re {|(&)|}, (fun _ -> AMPERSAND))
@@ -357,6 +376,9 @@ let token_regexes =
 ;
     (* , *)
     (re {|(,)|}, (fun _ -> COMMA))
+;
+    (* . *)
+    (reDot {|(\.)|}, (fun _ -> DOT))
 ]
 
 let match_opt regex text = match Re.exec_opt regex text with

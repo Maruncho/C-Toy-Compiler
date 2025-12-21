@@ -6,6 +6,8 @@ type initial_value = Tentative | Initial of (Const.result * Ast.data_type) list 
 type decl_type = Var of string * Ast.data_type
                | StaticVar of string * Ast.data_type
                | Func of fun_data
+               | Struct of string * Ast.struct_data ref
+               | Union of string * Ast.union_data ref
                (*| Type (* for now it's just int *) *)
 
 type identifier_attrs = FunAttr of fun_data * bool(*is_global*)
@@ -30,13 +32,44 @@ let emptyGlobal : envGlobal = Env.empty
 type envSemantGoto = string Env.t
 let emptySemantGoto : envSemantGoto = Env.empty
 
+let tag = ".tag."
+let struct_tag = tag
+let union_tag = tag
+
+let find_opt = Env.find_opt
+let tag_find_opt id = Env.find_opt (tag^id)
+let struct_find_opt id env =
+    let r = tag_find_opt id env in
+    match r with Some (Struct _, _) -> r | _ -> None
+let union_find_opt id env =
+    let r = tag_find_opt id env in
+    match r with Some (Union _, _) -> r | _ -> None
+
+let add  = Env.add
+let struct_add id (data:Ast.struct_data) lvl env ~is_new =
+    match struct_find_opt id env with
+        | None -> Env.add (struct_tag^id) ((Struct (id, ref data)), lvl) env
+        | Some _ when is_new -> Env.add (struct_tag^id) ((Struct (id, ref data)), lvl) env
+        | Some ((Struct (_, data_ref)), _) -> let () = data_ref := data in env
+        | _ -> failwith "Impossible???????"
+let union_add id (data:Ast.union_data) lvl env ~is_new =
+    match union_find_opt id env with
+        | None -> Env.add (union_tag^id) ((Union (id, ref data)), lvl) env
+        | Some _ when is_new -> Env.add (union_tag^id) ((Union (id, ref data)), lvl) env
+        | Some ((Union (_, data_ref)), _) -> let () = data_ref := data in env
+        | _ -> failwith "Impossible???????"
+
+let fold = Env.fold
+
 let isInScope identifier level (env:env) = match Env.find_opt identifier env with
     | None -> false
     | Some (_, lvl) -> level = lvl
-
-let find_opt = Env.find_opt
-let add  = Env.add
-let fold = Env.fold
+let structIsInScope identifier level (env:env) = match struct_find_opt identifier env with
+    | None -> false
+    | Some (_, lvl) -> level = lvl
+let unionIsInScope identifier level (env:env) = match union_find_opt identifier env with
+    | None -> false
+    | Some (_, lvl) -> level = lvl
 
 let printSemantGoto = Env.iter (fun k v -> print_string (k ^ " -> " ^ v ^ "\n"))
 
@@ -160,7 +193,7 @@ let compareParams pExp pAct fnName =
 
     let rec iter i = function
         | hExp :: tExp, hAct :: tAct ->
-            if hExp <> hAct then raise (EnvironmentError ("Inconsistent declaration of "^fnName^", parameter "^(string_of_int i)^": Expected "^(Ast.string_data_type hExp)^", but got "^(Ast.string_data_type hAct)^".")) else
+            if not (Ast.compare_types hExp hAct) then raise (EnvironmentError ("Inconsistent declaration of "^fnName^", parameter "^(string_of_int i)^": Expected "^(Ast.string_data_type hExp)^", but got "^(Ast.string_data_type hAct)^".")) else
             iter (i+1) (tExp, tAct)
         | [], [] -> ()
         | _ -> failwith "Impossible."
@@ -173,6 +206,8 @@ let addFunction is_external =
             | Var _ | StaticVar _ ->
                 if level = oldLvl then raise (EnvironmentError (identifier ^ " is already in scope"))
             | Func _ -> () (*locally nothing to check*)
+            | Struct _ -> failwith "Impossible."
+            | Union _ -> failwith "Impossible."
     end in
     match find_opt identifier globalEnv with
         | None -> let fn = (identifier, param_types, ret_type, thisIsDefined) in
@@ -182,7 +217,7 @@ let addFunction is_external =
             if thisIsDefined && hasBody then
                 raise (EnvironmentError ("Re-definition of "^identifier^" is not allowed")) else
             let () = compareParams oldParamTypes param_types identifier in
-            if oldRetType <> ret_type then
+            if not (Ast.compare_types oldRetType ret_type) then
                 raise (EnvironmentError ("Inconsistent declaration of "^identifier^", Expected return type of "^(Ast.string_data_type oldRetType)^", but got "^(Ast.string_data_type ret_type)^".")) else
             if is_external <> wasExternal then
                 raise (EnvironmentError ("Cannot declare function static and extern: "^identifier)) else

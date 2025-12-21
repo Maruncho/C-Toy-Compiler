@@ -47,6 +47,27 @@ let parse tokens =
     in let typ (t_expr : Ast.typed_expr) : Ast.data_type = t_expr |> fst
 
     in let postfix : Ast.stmt list ref = ref []
+    in let rec removeRepeatedPrefixIncrDecr = function
+        | typ, Ast.Dereference expr -> typ, Ast.Dereference (removeRepeatedPrefixIncrDecr expr)
+        | typ, Ast.AddressOf expr -> typ, Ast.AddressOf (removeRepeatedPrefixIncrDecr expr)
+        | typ, Ast.Subscript (expr1, expr2) -> typ, Ast.Subscript (removeRepeatedPrefixIncrDecr expr1, removeRepeatedPrefixIncrDecr expr2)
+        | typ, Ast.Dot (expr, x1, x2) -> typ, Ast.Dot (removeRepeatedPrefixIncrDecr expr, x1, x2)
+        | typ, Ast.Arrow (expr, x1, x2) -> typ, Ast.Arrow (removeRepeatedPrefixIncrDecr expr, x1, x2)
+        | typ, Ast.Unary (Ast.Increment, expr) -> typ, Ast.Unary (Ast.Rvalue, expr)
+        | typ, Ast.Unary (Ast.PtrIncrement, expr) -> typ, Ast.Unary (Ast.Rvalue, expr)
+        | typ, Ast.Unary (Ast.Decrement, expr) -> typ, Ast.Unary (Ast.Rvalue, expr)
+        | typ, Ast.Unary (Ast.PtrDecrement, expr) -> typ, Ast.Unary (Ast.Rvalue, expr)
+        | x -> x
+        (*| typ, Ast.Cast (x1, expr) -> typ, Ast.Cast (x1, removeRepeatedPrefixIncrDecr expr)*)
+        (*| typ, Ast.Unary (x1, expr) -> typ, Ast.Unary (x1, removeRepeatedPrefixIncrDecr expr)*)
+        (*| typ, Ast.Binary (x1, expr1, expr2) -> typ, Ast.Binary (x1, removeRepeatedPrefixIncrDecr expr1, removeRepeatedPrefixIncrDecr expr2)*)
+        (*| typ, Ast.BinarySp (x1, (expr1, x2), expr2) -> typ, Ast.BinarySp (x1, (removeRepeatedPrefixIncrDecr expr1, x2), removeRepeatedPrefixIncrDecr expr2)*)
+        (*| typ, Ast.BinaryAssign (x1, expr1, expr2, x2) -> typ, Ast.BinaryAssign (x1, removeRepeatedPrefixIncrDecr expr1, removeRepeatedPrefixIncrDecr expr2, x2)*)
+        (*| typ, Ast.Assignment (expr1, expr2) -> typ, Ast.Assignment (removeRepeatedPrefixIncrDecr expr1, removeRepeatedPrefixIncrDecr expr2)*)
+        (*| typ, Ast.Ternary ((expr1, x1), expr2, expr3) -> typ, Ast.Ternary ((removeRepeatedPrefixIncrDecr expr1, x1), removeRepeatedPrefixIncrDecr expr2, removeRepeatedPrefixIncrDecr expr3)*)
+
+
+
     in let schedulePostfixIncr var =
         let typ_var = typ var in
         let op =
@@ -57,7 +78,7 @@ let parse tokens =
                 Ast.Increment
             else
                 raise (ParserError "Can't increment a non-scalar expression") in
-        postfix := (Ast.Expression (typ_var, Ast.Unary (op, var))) :: !postfix
+        postfix := (Ast.Expression (typ_var, Ast.Unary (op, removeRepeatedPrefixIncrDecr var))) :: !postfix
     in let schedulePostfixDecr var =
         let typ_var = typ var in
         let op =
@@ -68,7 +89,7 @@ let parse tokens =
                 Ast.Decrement
             else
                 raise (ParserError "Can't decrement a non-scalar expression") in
-        postfix := (Ast.Expression (typ_var, Ast.Unary (op, var))) :: !postfix
+        postfix := (Ast.Expression (typ_var, Ast.Unary (op, removeRepeatedPrefixIncrDecr var))) :: !postfix
     in let flushPostfix() =
         let lst = !postfix in
         let () = postfix := [] in
@@ -146,13 +167,15 @@ let parse tokens =
         | 11 -> true
         | _ -> false
 
-    in let isLvalue ?(imAddressOfOperator=false) = function
+    in let rec isLvalue ?(imAddressOfOperator=false) = function
         | (_, Ast.Var (_, Ast.StaticVariable Ast.Array _)) -> imAddressOfOperator || false
         | (_, Ast.Var (_, Ast.AutoVariable Ast.Array _)) -> imAddressOfOperator || false
         | (_, Ast.Var (_, Ast.StaticVariable _)) -> true
         | (_, Ast.Var (_, Ast.AutoVariable _)) -> true
         | (_, Ast.Dereference _) -> true
         | (_, Ast.Subscript _) -> true
+        | (_, Ast.Dot (expr, _, _)) -> isLvalue ~imAddressOfOperator:true expr
+        | (_, Ast.Arrow _) -> true
         | (_, Ast.String _) -> imAddressOfOperator || false
         | _ -> false
 
@@ -186,7 +209,9 @@ let parse tokens =
         | L.INT
         | L.UNSIGNED
         | L.SIGNED
-        | L.LONG -> true
+        | L.LONG
+        | L.UNION
+        | L.STRUCT -> true
         | _ -> false
 
     in let isDecl = function
@@ -227,6 +252,20 @@ let parse tokens =
         try (Const.parseConstExpr expr) |> Const.isZero
         with _ -> false
 
+    in let check_structs t1 t2 =
+        match t1, t2 with
+            | Ast.Struct ref1, Ast.Struct ref2 ->
+                if not (ref1 == ref2) then raise (ParserError "Type mismatch in struct assignment")
+                else t1
+            | _ -> failwith "Impossible."
+
+    in let check_unions t1 t2 =
+        match t1, t2 with
+            | Ast.Union ref1, Ast.Union ref2 ->
+                if not (ref1 == ref2) then raise (ParserError "Type mismatch in union assignment")
+                else t1
+            | _ -> failwith "Impossible."
+
     in let get_common_type t1 t2 =
         (*chars are promoted to int*)
         let t1 = if Ast.isChar t1 then Ast.Int else t1 in
@@ -246,8 +285,11 @@ let parse tokens =
 
     in let get_common_ptr_type ?(can_to_void_ptr=true) ?(can_convert_to_nullptr=true) e1 e2 = 
     let t1, t2 = typ e1, typ e2 in
+    (*let () = print_endline (Ast.string_data_type t1) in*)
+    (*let () = print_endline (Ast.string_data_type t2) in*)
+    (*let () = print_newline() in*)
     (*let () = print_string (Ast.string_data_type t1 ^ "->" ^ (Ast.string_data_type t2) ^ "\n") in*)
-    if t1 = t2 then
+    if Ast.compare_types t1 t2 then
         t2
     else if Ast.isIntegral t1 && is_nullptr_constant e1 && can_convert_to_nullptr then
         t2
@@ -255,13 +297,13 @@ let parse tokens =
         t1
     else if t1 = Ast.Ptr Ast.Void && Ast.isPointer t2 && can_to_void_ptr then
         t1
-    else if t2 = Ast.Ptr Ast.Void && Ast.isPointer t2 && can_to_void_ptr then
+    else if t2 = Ast.Ptr Ast.Void && Ast.isPointer t1 && can_to_void_ptr then
         t2
     else
         raise (ParserError "Expressions have incompatible types.")
 
     in let explicit_convert_to ((old_type, _) as typed_expr) new_type =
-        if old_type = new_type then typed_expr
+        if Ast.compare_types old_type new_type then typed_expr
         else if (Ast.isArray old_type) && (Ast.isPointer new_type) && (Ast.getPointerType old_type) = (Ast.getPointerType new_type) then
             failwith "explicit_convert_to array to pointer should've been handled by the decay"
             (*(decayArray old_type, old_expr)*)
@@ -269,6 +311,12 @@ let parse tokens =
             raise (ParserError "Cannot convert a double to a pointer.")
         else if (Ast.isPointer old_type) && (Ast.isFloatingPoint new_type) then
             raise (ParserError "Cannot convert a pointer to a double.")
+        else if (Ast.isStructOrUnion old_type) && (Ast.isStructOrUnion new_type) then
+            raise (ParserError "Cannot convert a struct/union type to another struct/union type.")
+        else if (Ast.isStructOrUnion old_type) && (Ast.Void <> new_type) then
+            raise (ParserError "Cannot convert a struct/union type to any other type")
+        else if (Ast.Void <> old_type) && (Ast.isStructOrUnion new_type) then
+            raise (ParserError "Cannot convert a non-struct/union type to a struct/union type")
         else (new_type, Ast.Cast (new_type, typed_expr))
 
     in let implicit_convert_to ((old_type, _) as typed_expr) new_type =
@@ -276,9 +324,9 @@ let parse tokens =
             explicit_convert_to typed_expr (Ast.Ptr Ast.Void)
         else if old_type = Ast.Ptr Ast.Void && Ast.isPointer new_type then
             explicit_convert_to typed_expr (Ast.Ptr Ast.Void)
-        else if (Ast.isPointer old_type) && (Ast.isPointer new_type) && new_type <> old_type then
+        else if (Ast.isPointer old_type) && (Ast.isPointer new_type) && not (Ast.compare_types new_type  old_type) then
             raise (ParserError "Cannot implicitly convert from one pointer type to another.")
-        else if (Ast.isArray old_type) && (Ast.isPointer new_type) && (Ast.getPointerType old_type) <> (Ast.getPointerType new_type) then
+        else if (Ast.isArray old_type) && (Ast.isPointer new_type) && not (Ast.compare_types (Ast.getPointerType old_type) (Ast.getPointerType new_type)) then
             raise (ParserError "Cannot implicitly convert from one pointer type to another.")
         else if (Ast.isPointer old_type) && (Ast.isArray new_type) then
             raise (ParserError "Cannot implicitly convert a pointer to an array.")
@@ -324,6 +372,7 @@ let parse tokens =
 
         | _ -> try (
             let r = parse_expr env lvl in
+            if not (Ast.isComplete(typ r)) && Ast.Void <> (typ r) then raise (ParserError "Can't have incomplete type expressions in for init") else
             let r = Some (Ast.InitExpr (r, flushPostfix())) in let () = expect L.SEMICOLON in r, env
         )
         with ParserError e -> raise (ParserError ("Expected statement/declaration\n"^e))
@@ -382,6 +431,8 @@ let parse tokens =
                     | Ast.Array _ -> raise (ParserError "Cannot use array types in cases.")
                     | Ast.Void -> raise (ParserError "Cannot use void in cases.")
                     | Ast.FunType _ -> raise (ParserError "Cannot use functions in cases.")
+                    | Ast.Struct _ -> raise (ParserError "Cannot use structs in cases.")
+                    | Ast.Union _ -> raise (ParserError "Cannot use unions in cases.")
                 end in
                 ([(lit, lbl)], Ast.Case (lit, lbl))
 
@@ -410,7 +461,7 @@ let parse tokens =
 
         in let (cases,stmt) = parseStmt body in (cases, stmt, !default)
 
-    and parse_type_spec list_opt =
+    and parse_type_spec ?(in_decl=false) list_opt env =
         let rec iter() = match nextToken() with
             | L.VOID
             | L.CHAR
@@ -419,10 +470,48 @@ let parse tokens =
             | L.SIGNED
             | L.UNSIGNED
             | L.DOUBLE -> let t = eatToken() in t :: iter()
+            | L.STRUCT | L.UNION ->
+                let t = eatToken() in
+                let id = expectIdentifier() in
+                t :: (L.ID id) :: iter()
             | _ -> []
 
         in let lst = match list_opt with | None -> iter() | Some lst -> lst
         in if List.is_empty lst then raise (ParserError "No type specifier.") else
+
+        (*structs*)
+        let typ, success = match lst with
+                | [L.STRUCT; L.ID id] ->
+                    begin match (Environment.struct_find_opt id env) with
+                        | None when not in_decl -> raise (ParserError ("Struct "^id^" is not declared."))
+                        | None -> Ast.Struct {contents={name=id;mems=[];size=0L;align=0L}}, true
+                        | Some (Environment.Struct (_, data), _) ->
+                            Ast.Struct data, true
+                        | Some _ -> failwith "Impossible."
+                    end
+                | lst -> Ast.Int, not (List.mem L.STRUCT lst)
+        in
+        if (not success) then(
+            raise (ParserError "Can't combine struct with other type specifiers"))
+        else if typ <> Ast.Int then typ
+        else
+
+        (*unions*)
+        let typ, success = match lst with
+                | [L.UNION; L.ID id] ->
+                    begin match (Environment.union_find_opt id env) with
+                        | None when not in_decl -> raise (ParserError ("Union "^id^" is not declared."))
+                        | None -> Ast.Union {contents={name=id;mems=[];size=0L;align=0L}}, true
+                        | Some (Environment.Union (_, data), _) ->
+                            Ast.Union data, true
+                        | Some _ -> failwith "Impossible."
+                    end
+                | lst -> Ast.Int, not (List.mem L.UNION lst)
+        in
+        if (not success) then(
+            raise (ParserError "Can't combine union with other type specifiers"))
+        else if typ <> Ast.Int then typ
+        else
 
         if lst = [L.VOID] then Ast.Void else
         if List.mem L.VOID lst then raise (ParserError "Can't combine 'void' with other type specifiers") else
@@ -451,26 +540,58 @@ let parse tokens =
             | (false, false) -> Ast.Int
 
 
-    and parse_specifiers() =
+    and parse_specifiers ?(in_decl=false) env =
         let rec iter typ storage = match nextToken() with
             | L.EXTERN -> let _ = eatToken() in
                           if Option.is_some storage then raise (ParserError "Invalid storage class")
                           else iter typ (Some Ast.Extern)
+
             | L.STATIC -> let _ = eatToken() in
                           if Option.is_some storage then raise (ParserError "Invalid storage class")
                           else iter typ (Some Ast.Static)
 
+            | L.STRUCT -> let t = eatToken() in
+                          let id = expectIdentifier() in
+                          iter (t :: (L.ID id) :: typ) storage
+
+            | L.UNION -> let t = eatToken() in
+                          let id = expectIdentifier() in
+                          iter (t :: (L.ID id) :: typ) storage
+
             | x when isTypeSpec x -> 
                 iter (eatToken() :: typ) storage
 
+
             | _ -> (typ, storage)
         in let (typ, storage) = iter [] None in
-        (parse_type_spec (Some typ), storage)
+        (parse_type_spec ~in_decl:in_decl (Some typ) env, storage)
 
     and parse_initialiser typ is_static env lvl =
-        let rec fill_array typ len = match len with
+        let struct_get_pad members struct_size = match members with
+            | (_,typ1,off1) :: (_,_,off2) :: _ ->
+                let () = print_endline ((Int64.to_string off1) ^ " " ^ (Int64.to_string off2)) in
+                let size1 = Ast.indexing_size typ1 in
+                let offRel = Int64.sub off2 off1 in
+                Int64.sub offRel size1
+            | (_,typ,off) :: [] ->
+                let typSize = Ast.indexing_size typ in
+                let unpaddedSize = Int64.add typSize off in
+                Int64.sub struct_size unpaddedSize
+            | [] -> 0L
+        in let rec fill_array typ len = match len with
             | 0L -> []
             | _ -> (zeroInit typ) :: fill_array typ (Int64.sub len 1L)
+        and fill_struct members size =
+            let rec iter size = match size with
+                | 0L -> []
+                | x when size >= 8L -> (zeroInit Ast.Long) :: (iter (Int64.sub size 8L))
+                | x when size >= 4L -> (zeroInit Ast.Int) :: (iter (Int64.sub size 4L))
+                | x ->                 (zeroInit Ast.SChar) :: (iter (Int64.sub size 1L))
+            in match members with
+                | (_,_,off) :: _ ->
+                    let sizeLeft = Int64.sub size off in
+                    iter sizeLeft
+                | [] -> []
         and zeroInit typ = match typ with
             | Ast.Ptr _ ->
                 Ast.SingleInit (Ast.Long, Ast.Literal (Ast.init_zero Ast.Long))
@@ -478,6 +599,10 @@ let parse tokens =
                 Ast.SingleInit (typ, Ast.Literal (Ast.init_zero typ))
             | Ast.Array (typ, length) ->
                 Ast.CompoundInit (fill_array typ length)
+            | Ast.Struct {contents={size;_}} ->
+                Ast.ZeroesInit size
+            | Ast.Union {contents={size;_}} ->
+                Ast.ZeroesInit size
             | Ast.FunType _ -> failwith "Impossible."
             | Ast.Void -> failwith "Impossible void."
             | Ast.Char | Ast.SChar | Ast.UChar | Ast.Int | Ast.Double | Ast.UInt | Ast.Long | Ast.ULong -> failwith "For OCaml to stop complaining"
@@ -492,7 +617,7 @@ let parse tokens =
                     let str, zeroes = if (Int64.of_int (str_length - 1) = length)
                         then String.sub str 0 (str_length - 1), 0L
                         else str, (Int64.sub length (Int64.of_int str_length))
-                    in Ast.CompoundInit ((Ast.SingleInit (x, Ast.String str)) :: (fill_array arr_of_typ zeroes))
+                    in Ast.CompoundInit ((Ast.SingleInit ((Ast.Array (arr_of_typ, length)), Ast.String str)) :: (fill_array arr_of_typ zeroes))
 
                 else
                     let init = (String.sub str 0 (str_length - 1)) |> String.to_seq |> List.of_seq |>
@@ -518,16 +643,63 @@ let parse tokens =
                 let _ = eatToken() in
                 fill_array typ arr_length
             | _ -> raise (ParserError "Invalid compound initializer.")
+
+        in let rec parseRestOfStruct members struct_size = match nextToken() with
+            | L.COMMA ->
+                let _ = eatToken() in
+                if nextToken() = L.RBRACE then
+                    let _ = eatToken() in
+                    fill_struct members struct_size
+                else
+                    if members = [] then
+                        raise (ParserError "Struct Compound Initializer exceeds member count")
+                    else
+                        let (_,typ,_), tail = List.hd members, List.tl members in
+                        let init = parse_initialiser typ is_static env lvl in
+                        let pad = struct_get_pad members struct_size in
+                        if pad = 0L then
+                            init :: (parseRestOfStruct tail struct_size)
+                        else
+                            init :: (Ast.ZeroesInit pad) :: (parseRestOfStruct tail struct_size)
+            | L.RBRACE ->
+                let _ = eatToken() in
+                fill_struct members struct_size
+            | _ -> raise (ParserError "Invalid compound initializer.")
+        in let parseRestOfUnion first_size union_size = match nextToken() with
+            | L.COMMA ->
+                raise (ParserError "Cannot initialize more than one member in an union type.")
+            | L.RBRACE ->
+                let _ = eatToken() in
+                let pad = Int64.sub union_size first_size in
+                if pad <> 0L then
+                    [Ast.ZeroesInit pad]
+                else
+                    []
+            | _ -> raise (ParserError "Invalid compound initializer.")
         in
         match nextToken() with
         | L.LBRACE ->
             let _ = eatToken() in
-                if Ast.isArray typ then
-                    let (typ, length) = Ast.getArrayData typ in
+            begin match typ with
+                | Ast.Array (typ, length) ->
                     let first_init = parse_initialiser typ is_static env lvl in
                     Ast.CompoundInit (first_init :: (parseRestOfArray typ (Int64.sub length 1L)))
-                else
+                | Ast.Struct {contents={mems;size;_}} ->
+                    let (_,typ,_), tail = List.hd mems, List.tl mems in
+                    let first_init = parse_initialiser typ is_static env lvl in
+                    let pad = struct_get_pad mems size in
+                    let cmpInit = if pad = 0L then
+                        first_init :: (parseRestOfStruct tail size)
+                    else
+                        first_init :: (Ast.ZeroesInit pad) :: (parseRestOfStruct tail size)
+                    in Ast.CompoundInit(cmpInit) 
+                | Ast.Union {contents={mems;size;_}} ->
+                    let (_,typ) = List.hd mems in
+                    let first_init = parse_initialiser typ is_static env lvl in
+                    Ast.CompoundInit (first_init :: (parseRestOfUnion (Ast.indexing_size typ) size))
+                | _ ->
                     raise (ParserError ("Cannot use compound initializer with " ^ Ast.string_data_type typ))
+            end
         | _ ->
             let t_expr = parse_expr env lvl in
 
@@ -542,7 +714,7 @@ let parse tokens =
                 else
                     raise (ParserError ("Cannot initialize a " ^ (Ast.string_data_type typ) ^ " with a string literal."))
 
-            else if not (Ast.isCompound typ) then
+            else if not (Ast.isArray typ) || Ast.isStructOrUnion typ then
                 Ast.SingleInit (implicit_convert_to t_expr typ)
             else
                 raise (ParserError ("Cannot use scalar initializer with " ^ Ast.string_data_type typ))
@@ -550,6 +722,10 @@ let parse tokens =
     and parse_var_decl (typ, storage, id) env lvl =
 
         if typ = Ast.Void then raise (ParserError "Cannot declare void variables.") else
+
+        if not (storage = Some Ast.Extern) && not (Ast.isComplete typ) then
+            raise (ParserError "Cannot declare variables with incomplete types.")
+        else
 
         let newId = newVar id in
 
@@ -611,6 +787,15 @@ let parse tokens =
         in
         (*-----------------------*)
 
+        (* Check for incomplete types if it is a function definition*)
+        let () = if Option.is_some body then
+            let _ = if Ast.Void <> ret_type && (not (Ast.isComplete ret_type)) then
+                raise (ParserError "Function return type is incomplete.")
+            in
+                List.iter (fun t -> if not (Ast.isComplete t) then raise (ParserError "Function parameter's type is incomplete.")) param_types
+        in
+        (*------------------*)
+
 
         let (newEnv, gEnv) = try Environment.tryAddFunction env !globalEnv lvl storage id param_types ret_type body
             with Environment.EnvironmentError s -> raise (ParserError s)
@@ -618,11 +803,227 @@ let parse tokens =
 
         in (Ast.FunDecl (id, List.combine param_types param_names, body, ret_type, storage), newEnv)
 
-    and parse_decl ?(forInit=false) env lvl = 
-        let (typ, storage) = parse_specifiers() in
+    and checkForUndeclaredStructs typ env lvl = match typ with
+        | Ast.Struct {contents={name;_}} -> 
+            begin match (Environment.struct_find_opt name env) with
+                | None -> raise (ParserError ("Struct "^name^" is not declared."))
+                | Some (Environment.Struct _, _) -> ()
+                | Some _ -> failwith "Impossible."
+            end
+        | Ast.Union {contents={name;_}} -> 
+            begin match (Environment.union_find_opt name env) with
+                | None -> raise (ParserError ("Union "^name^" is not declared."))
+                | Some (Environment.Union _, _) -> ()
+                | Some _ -> failwith "Impossible."
+            end
+        | Ast.Ptr typ -> checkForUndeclaredStructs typ env lvl
+        | Ast.Array (typ, _) -> checkForUndeclaredStructs typ env lvl
+        | Ast.FunType (_, typ) ->
+            (*I'm gonna assume parameters are checked, because that's what I did and I'm the only guy working here.*)
+            checkForUndeclaredStructs typ env lvl
+        | _ -> ()
+
+    and parse_struct_decl id env lvl =
+        (*temporary declaration to allow self ref if necessary*)
+        let env, prevStruct, prevStructLvl = match Environment.tag_find_opt id env with
+            | Some (Environment.Struct (_, data), lvll) ->
+                if lvll = lvl then
+                    env, Some data, lvll
+                else
+                    Environment.struct_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, Some data, lvll
+            | Some (Environment.Union _, lvll) ->
+                if lvll = lvl then
+                    raise (ParserError ("Struct declaration conflicts with previous union declaration with this tag name '"^id^"'"))
+                else
+                    Environment.struct_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, None, -1
+            | None ->
+                Environment.struct_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, None, -1
+            | Some _ -> failwith "Impossible."
+
+        in let rec fixOffsets mems = match mems with
+            | (id1, typ1, off1) :: (id2, typ2, off2) :: t ->
+                let size1 = Ast.indexing_size typ1 in
+                let aln2 = Ast.alignment ~in_struct:true typ2 in
+
+                let unpaddedOff = Int64.add off1 size1 in
+                let rem = Int64.rem unpaddedOff aln2 in
+                let pad = if rem <> 0L then Int64.sub aln2 rem else 0L in
+
+                let off = Int64.add unpaddedOff pad in
+                let new2nd = (id2, typ2, off) in
+                (id1, typ1, off1) :: (fixOffsets (new2nd :: t))
+            | _ -> mems
+
+        in let struct_align = ref 0L
+
+        in let rec fixSize mems = match mems with
+            | [] -> 0L
+            | [(_,typ,off)] ->
+                let typ_size = Ast.indexing_size typ in
+                let unpadded_size = Int64.add off typ_size in
+                let rec genSize acc = if acc >= unpadded_size then acc else genSize (Int64.add acc !struct_align) in
+                genSize 0L
+            | h :: t -> fixSize t
+
+        in let mems = if nextToken() = L.LBRACE then
+            let _ = eatToken() in
+
+            let rec iter ?(first=false) seen = match nextToken() with
+                | x when isTypeSpec x ->
+                    let typ = parse_type_spec None env in
+                    let (id, typ, _) = try
+                            ParserDeclarator.process_declarator tokens typ
+                                (fun () -> parse_type_spec None env)
+                                (fun () -> parse_expr env lvl)
+                        with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+
+                    let () = begin match typ with
+                        | Ast.FunType _ ->
+                            raise (ParserError "Cannot have functions as struct members.")
+                        | _ -> if not (Ast.isComplete typ) then raise (ParserError "Cannot have struct members of incomplete type.")
+                    end
+                    in
+                    let () = expect L.SEMICOLON in
+
+                    if List.mem id seen then raise (ParserError ("Duplicate member " ^ id ^ " in struct")) else
+
+                    let align = Ast.alignment ~in_struct:true typ in
+                    let () = if align > !struct_align then struct_align := align in
+                    (id, typ, 0L) :: (iter (id::seen))
+
+                | L.RBRACE when first -> raise (ParserError "Cannot define a struct with an empty member list.")
+                | L.RBRACE -> let _ = eatToken() in []
+                | _ -> raise (ParserError "Invalid struct definition.")
+
+            in iter ~first:true []
+        else
+            []
+        (*fix offsets*)
+        in let mems = fixOffsets mems
+        in let struct_size = fixSize mems
+        in let () = print_endline (id ^ " size: " ^ (Int64.to_string struct_size ^ " align: " ^ (Int64.to_string !struct_align)))
+        in let () = print_endline ("\t" ^ (String.concat " " (List.map (fun (_,_,off) -> Int64.to_string off) mems)))
+        in let () = expect L.SEMICOLON
+
+        in let env = match (Environment.struct_find_opt id env) with
+            | None -> failwith "Impossible????"
+            | Some _ when Option.is_none prevStruct ->
+                Environment.struct_add ~is_new:false id {name=id;mems=mems;size= struct_size;align= !struct_align} lvl env
+            | Some _ ->
+
+                let prevStruct = Option.get prevStruct in
+
+                (*new is def*)
+                if struct_size > 0L then
+                    (*old is def and in same scope*)
+                    if !prevStruct.size > 0L && prevStructLvl = lvl then
+                        raise (ParserError "Can't redefine struct in the same scope.")
+                    (*old is decl OR def in outer scope*)
+                    else
+                        Environment.struct_add ~is_new:false id {name=id;mems=mems;size= struct_size;align= !struct_align} lvl env
+                (*new is decl*)
+                else
+                    env
+        in let mems = List.map (fun (x,y,_) -> (x,y)) mems
+        in (Ast.StructDecl (id, mems)), env
+
+    and parse_union_decl id env lvl =
+        (*temporary declaration to allow self ref if necessary*)
+        let env, prevUnion, prevUnionLvl = match Environment.tag_find_opt id env with
+            | Some (Environment.Union (_, data), lvll) ->
+                if lvll = lvl then
+                    env, Some data, lvll
+                else
+                    Environment.union_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, Some data, lvll
+            | Some (Environment.Struct _, lvll) ->
+                if lvll = lvl then
+                    raise (ParserError ("Union declaration conflicts with previous struct declaration with this tag name '"^id^"'"))
+                else
+                    Environment.union_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, None, -1
+            | None ->
+                Environment.union_add ~is_new:true id {name=id;mems=[];size=0L;align=0L} lvl env, None, -1
+            | Some _ -> failwith "Impossible."
+
+        in let union_size = ref 0L
+        in let union_align = ref 0L
+        in let mems = if nextToken() = L.LBRACE then
+            let _ = eatToken() in
+
+            let rec iter seen = match nextToken() with
+                | x when isTypeSpec x ->
+                    let typ = parse_type_spec None env in
+                    let (id, typ, _) = try
+                            ParserDeclarator.process_declarator tokens typ
+                                (fun () -> parse_type_spec None env)
+                                (fun () -> parse_expr env lvl)
+                        with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+
+                    let () = begin match typ with
+                        | Ast.FunType _ ->
+                            raise (ParserError "Cannot have functions as union members.")
+                        | _ -> if not (Ast.isComplete typ) then raise (ParserError "Cannot have union members of incomplete type.")
+                    end
+                    in
+                    let () = expect L.SEMICOLON in
+
+                    if List.mem id seen then raise (ParserError ("Duplicate member " ^ id ^ " in union")) else
+
+                    let align = Ast.alignment ~in_struct:true typ in
+                    let () = if align > !union_align then union_align := align in
+                    let size = Ast.indexing_size typ in
+                    let () = if size > !union_size then union_size := size in
+                    (id, typ) :: (iter (id::seen))
+
+                | L.RBRACE when List.is_empty seen -> raise (ParserError "Cannot define a union with an empty member list.")
+                | L.RBRACE ->
+                    let _ = eatToken()
+                    (*fix size*)
+                    in let modulo = Int64.rem !union_size !union_align
+                    in let () = union_size := if Int64.equal modulo 0L then !union_size else Int64.add !union_size (Int64.sub !union_align modulo)
+                    in []
+                | _ -> raise (ParserError "Invalid union definition.")
+
+            in iter []
+        else
+            []
+        in let () = expect L.SEMICOLON
+
+        in let env = match (Environment.union_find_opt id env) with
+            | None -> failwith "Impossible????"
+            | Some _ when Option.is_none prevUnion ->
+                Environment.union_add ~is_new:false id {name=id;mems=mems;size= !union_size;align= !union_align} lvl env
+            | Some _ ->
+
+                let prevUnion = Option.get prevUnion in
+
+                (*new is def*)
+                if !union_size > 0L then
+                    (*old is def and in same scope*)
+                    if !prevUnion.size > 0L && prevUnionLvl = lvl then
+                        raise (ParserError "Can't redefine union in the same scope.")
+                    (*old is decl OR def in outer scope*)
+                    else
+                        Environment.union_add ~is_new:false id {name=id;mems=mems;size= !union_size;align= !union_align} lvl env
+                (*new is decl*)
+                else
+                    env
+
+        in let () = print_endline (id ^ " size: " ^ (Int64.to_string !union_size ^ " align: " ^ (Int64.to_string !union_align)))
+        in (Ast.UnionDecl (id, mems)), env
+
+    and parse_decl ?(forInit=false) env lvl =
+        let (typ, storage) = parse_specifiers ~in_decl:true env in
+        match typ with
+        | Ast.Struct {contents={name;_}} when nextToken() = L.LBRACE || nextToken() = L.SEMICOLON ->
+            parse_struct_decl name env lvl
+        | Ast.Union {contents={name;_}} when nextToken() = L.LBRACE || nextToken() = L.SEMICOLON ->
+            parse_union_decl name env lvl
+        | _ ->
+
+        let () = checkForUndeclaredStructs typ env lvl in
         let (id, typ, maybe_params) = try
                 ParserDeclarator.process_declarator tokens typ
-                    (fun () -> parse_type_spec None)
+                    (fun () -> parse_type_spec None env)
                     (fun () -> parse_expr env lvl)
             with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
         match typ with
@@ -636,17 +1037,17 @@ let parse tokens =
     and parse_stmt env lvl fn_return_type =
         let result = match nextToken() with
         | L.RETURN ->
+            let _ = eatToken() in
+            if nextToken() = L.SEMICOLON then
                 let _ = eatToken() in
-                if nextToken() = L.SEMICOLON then
-                    let _ = eatToken() in
-                    if fn_return_type <> Ast.Void then raise (ParserError "Non-void function must return a value.") else
-                    [Ast.Return None]
-                else
-                    let typed_expr = parse_expr env lvl in
-                    if fn_return_type = Ast.Void && typ typed_expr <> Ast.Void
-                        then raise (ParserError "Void function must return a void value (or nothing).") else
-                    let r = implicit_convert_to typed_expr fn_return_type in
-                    let () = expect L.SEMICOLON in [Ast.Return (Some r)]
+                if fn_return_type <> Ast.Void then raise (ParserError "Non-void function must return a value.") else
+                [Ast.Return None]
+            else
+                let typed_expr = parse_expr env lvl in
+                if fn_return_type = Ast.Void && typ typed_expr <> Ast.Void
+                    then raise (ParserError "Void function must return a void value (or nothing).") else
+                let r = implicit_convert_to typed_expr fn_return_type in
+                let () = expect L.SEMICOLON in [Ast.Return (Some r)]
 
         | L.SEMICOLON -> let () = expect L.SEMICOLON in [Ast.Null]
         | L.IF ->
@@ -755,6 +1156,7 @@ let parse tokens =
                 if count <= 0 then raise (ParserError ("Argument count is less than " ^ original)) else
                 let [@warning "-8"] param_typ :: rest = paramTypes in
                 let arg = parse_expr env lvl in
+                if not (Ast.isComplete (typ arg)) then raise (ParserError "Function arguments must be of a complete type") else
                 let arg = implicit_convert_to arg param_typ in
                 begin match nextToken() with
                     | L.COMMA -> let _ = eatToken() in arg :: (iter rest (count-1) false)
@@ -793,6 +1195,8 @@ let parse tokens =
                         | Environment.StaticVar (realId, typ) ->
                             typ, (Ast.Var (realId, Ast.StaticVariable typ))
                         | Environment.Func (id, paramTypes, retType, _) -> retType, (Ast.Var (id, Ast.Function (paramTypes, retType)))
+                        | Environment.Struct _ -> failwith "Impossible struct in parse_primary"
+                        | Environment.Union _ -> failwith "Impossible union in parse_primary"
                     end
             end
             | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
@@ -813,6 +1217,7 @@ let parse tokens =
             | L.LPAREN ->
                 let id, paramsTypes, retType = begin match left with (_, Ast.Var (id, Ast.Function (paramsTypes, retType))) -> id, paramsTypes, retType
                                                      | _ -> raise (ParserError "Cannot call a variable.") end in
+                if not (Ast.isComplete retType) && Ast.Void <> retType then raise (ParserError "Cannot call function with incomplete data type.") else
                 let _ = eatToken() in
                 let args = parse_args env lvl paramsTypes in
                 iter (nextToken()) (retType, Ast.Call (id, args))
@@ -838,6 +1243,43 @@ let parse tokens =
                 else
                     raise (ParserError "Cannot use subscript operator with nothing other than a pointer and an integral expression.")
 
+            | L.DOT ->
+                let _ = eatToken() in
+                let right = expectIdentifier() in
+                begin match typ left with
+                    | Ast.Struct {contents={name;mems;_}} ->
+                        begin match List.find_opt (fun (id,_,_) -> id = right) mems with
+                            | Some (id,typ,off) ->
+                                iter (nextToken()) (decay_arr (typ, Ast.Dot (left, id, off)))
+                            | None -> raise (ParserError ("Struct "^name^" doesn't have field \""^right^"\"."))
+                        end
+                    | Ast.Union {contents={name;mems;_}} ->
+                        begin match List.find_opt (fun (id,_) -> id = right) mems with
+                            | Some (id,typ) ->
+                                iter (nextToken()) (decay_arr (typ, Ast.Dot (left, id, 0L)))
+                            | None -> raise (ParserError ("Union "^name^" doesn't have field \""^right^"\"."))
+                        end
+                    | _ -> raise (ParserError "Lefthand side of dot operator is not a struct or union.")
+                end
+
+            | L.ARROW ->
+                let _ = eatToken() in
+                let right = expectIdentifier() in
+                begin match typ left with
+                    | Ast.Ptr (Ast.Struct {contents={name;mems;_}}) ->
+                        begin match List.find_opt (fun (id,_,_) -> id = right) mems with
+                            | Some (id,typ,off) ->
+                                iter (nextToken()) (decay_arr (typ, Ast.Arrow (left, id, off)))
+                            | None -> raise (ParserError ("Struct "^name^" doesn't have field \""^right^"\"."))
+                        end
+                    | Ast.Ptr (Ast.Union {contents={name;mems;_}}) ->
+                        begin match List.find_opt (fun (id,_) -> id = right) mems with
+                            | Some (id,typ) ->
+                                iter (nextToken()) (decay_arr (typ, Ast.Arrow (left, id, 0L)))
+                            | None -> raise (ParserError ("Union "^name^" doesn't have field \""^right^"\"."))
+                        end
+                    | _ -> raise (ParserError "Lefthand side of dot operator is not a struct or union pointer.")
+                end
 
             | _ -> (*functions cannot be an expression past this point*)
                 begin match left with
@@ -850,12 +1292,15 @@ let parse tokens =
     and parse_cast ?(arr_decay=true) env lvl = match nextToken() with
         | L.LPAREN when isTypeSpec (nextNextToken()) ->
             let _ = eatToken() in
-            let typp = parse_type_spec None in
+            let typp = parse_type_spec None env in
             let typp = ParserDeclarator.process_abstract_declarator tokens typp (fun () -> parse_expr env lvl) in
             let () = expect L.RPAREN in
             let src = parse_cast env lvl in
 
             if Ast.Void = typp then
+                if not (Ast.isComplete (typ src)) && Ast.Void <> (typ src)
+                    then raise (ParserError "Cannot cast an incomplete type to void.") else
+
                 explicit_convert_to src Ast.Void
             else if not (Ast.isScalar typp) then
                 raise (ParserError "Can only cast to scalar type of void")
@@ -887,6 +1332,7 @@ let parse tokens =
                           let typed_expr = if Ast.isChar (typ typed_expr) then explicit_convert_to typed_expr Ast.Int else typed_expr in
                           if Ast.isFloatingPoint (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a floating point expression") else
                           if Ast.isPointer (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a pointer") else
+                          if Ast.isStructOrUnion (typ typed_expr) then raise (ParserError "Can't take the bitwise complement of a struct/union") else
                           (typ typed_expr, Ast.Unary (Ast.Complement, typed_expr))
         | L.BANG -> let _ = eatToken() in
                     let typed_expr = parse_cast env lvl in
@@ -897,14 +1343,16 @@ let parse tokens =
                         if Ast.Ptr Ast.Void = (typ typed_expr) then
                             raise (ParserError "Cannot dereference a void pointer.")
                         else if (Ast.isPointer (typ typed_expr)) then
-                            decay_arr (Ast.getPointerType (typ typed_expr), Ast.Dereference typed_expr)
+                            if not (Ast.isPtrToComplete (typ typed_expr)) then
+                                raise (ParserError "Can't dereference a pointer to an incomplete type.")
+                            else decay_arr (Ast.getPointerType (typ typed_expr), Ast.Dereference typed_expr)
                         else
                             raise (ParserError "Cannot dereference a non-pointer.")
         | L.AMPERSAND -> let _ = eatToken() in
                         let typed_expr = parse_cast ~arr_decay:false env lvl in
                         begin match typed_expr with
-                            | (_, Ast.Dereference t_expr) ->
-                                (typ t_expr, Ast.Unary (Ast.Rvalue, t_expr))
+                            (*| (_, Ast.Dereference t_expr) ->*)
+                            (*    (typ t_expr, Ast.Unary (Ast.Rvalue, t_expr))*)
                             | (_, Ast.Subscript (ptr, index)) ->
                                 (typ ptr, Ast.Binary (Ast.PtrAdd, ptr, index))
                             | (typ, _) ->
@@ -917,6 +1365,10 @@ let parse tokens =
                                 else
                                     raise (ParserError "Cannot addressOf a non-lvalue.")
                         end
+        | L.AMPERRISK -> let _ = eatToken() in
+            let t_expr = parse_cast ~arr_decay:false env lvl in
+            (typ t_expr, Ast.Unary (Ast.Rvalue, t_expr))
+
         | L.INCREMENT ->
             let _ = eatToken() in
             let right = parse_cast env lvl in
@@ -944,7 +1396,7 @@ let parse tokens =
             let _ = eatToken() in
             if isTypeSpec (nextNextToken()) then
                 let () = expect L.LPAREN in
-                let typ = parse_type_spec None in
+                let typ = parse_type_spec None env in
                 let typ = ParserDeclarator.process_abstract_declarator tokens typ (fun () -> parse_expr env lvl) in
                 if not (Ast.isComplete typ) then raise (ParserError "Can't get the size of an incomplete type.") else
                 let () = expect L.RPAREN in
@@ -963,7 +1415,7 @@ let parse tokens =
         let left = parse_cast ~arr_decay:arr_decay env lvl in
         let peek = nextToken() in
         let rec iter peekToken left = let p = prec(peekToken) in
-            if p >= min_prec then(
+            if p >= min_prec then (
                 if isAssign p then
                     let op = eatToken() |> parseOp in
 
@@ -971,6 +1423,8 @@ let parse tokens =
                     let right = parse_expr ~min_prec:p env lvl in
                     let left_type = typ left in
                     let right_type = typ right in
+
+                    if not (Ast.isComplete left_type) then raise (ParserError "Cannot assign to incomplete type variable.") else
 
                     if (op = Ast.Add && Ast.isPointer left_type && Ast.isIntegral right_type) ||
                        (op = Ast.Sub && Ast.isPointer left_type && Ast.isIntegral right_type)
@@ -987,22 +1441,28 @@ let parse tokens =
                     else
 
                     let cmn_type =
-                        if Ast.isPointer (typ left) || Ast.isPointer (typ right) then
+                        if Ast.isStruct (typ left) && Ast.isStruct (typ right) then
+                            check_structs (typ left) (typ right)
+                        else if Ast.isUnion (typ left) && Ast.isUnion (typ right) then
+                            check_unions (typ left) (typ right)
+                        else if Ast.isPointer (typ left) || Ast.isPointer (typ right) then
                             get_common_ptr_type left right
                         else if Ast.isScalar (typ left) && Ast.isScalar (typ right) then
                             get_common_type (typ left) (typ right)
                         else
-                            raise (ParserError "Invalid operarands for compound assignment.") in
+                            raise (ParserError "Invalid operands for compound assignment.") in
                     (*let new_left = explicit_convert_to left cmn_type in*)
                     let l_type_right = explicit_convert_to right left_type in
                     let cmn_type_right = explicit_convert_to right cmn_type in
                     match op with
                         | Ast.Assign -> iter (nextToken()) (left_type, (Ast.Assignment (left, l_type_right)))
                         | Ast.Lshift | Ast.Rshift ->
+                            if (Ast.isStructOrUnion cmn_type) then raise (ParserError "Can't use compound assign operators on structs/unions") else
                             if (Ast.isFloatingPoint cmn_type) then raise (ParserError "Can't take the shift of a floating point expression") else
                             if (Ast.isPointer cmn_type) then raise (ParserError "Can't shift pointers") else
                             iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, l_type_right, None))
                         | _ ->
+                            if (Ast.isStructOrUnion cmn_type) then raise (ParserError "Can't use compound assign operators on structs/unions") else
                             if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
                             if (Ast.isPointer cmn_type && isNotPointerable op) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
                             if left_type <> cmn_type then
@@ -1025,12 +1485,20 @@ let parse tokens =
                     let typ_el = typ el in
 
                     let cmn_type =
-                        if Ast.isPointer (typ_th) || Ast.isPointer (typ_el) then
+                        if typ_th = Ast.Void && typ_el = Ast.Void then
+                            Ast.Void
+
+                        else if not (Ast.isComplete typ_th) || not (Ast.isComplete typ_el) then
+                            raise (ParserError "Can't have incomplete type expressions in ternary branches")
+                        else if Ast.isStruct typ_th && Ast.isStruct typ_el then
+                            check_structs typ_th typ_el
+                        else if Ast.isUnion typ_th && Ast.isUnion typ_el then
+                            check_unions typ_th typ_el
+
+                        else if Ast.isPointer (typ_th) || Ast.isPointer (typ_el) then
                             get_common_ptr_type th el
                         else if Ast.isScalar (typ_th) && Ast.isScalar (typ_el) then
                             get_common_type typ_th typ_el
-                        else if typ_th = Ast.Void && typ_el = Ast.Void then
-                            Ast.Void
                         else
                             raise (ParserError "Cannot convert branches of ternary to a common type.")
                     in
@@ -1090,7 +1558,7 @@ let parse tokens =
                         raise (ParserError "Cannot add two pointers together.")
                     else if (op = Ast.Sub && Ast.isPointer left_type && Ast.isPointer right_type && left_type = right_type) then
                         if not (Ast.isPtrToComplete left_type) then raise (ParserError "Ptr type size must be complete.") else
-                        iter (nextToken()) (Ast.Long, Ast.Binary (Ast.PtrPtrSub, left, right))
+                        iter (nextToken()) (Ast.Long, Ast.Binary (Ast.PtrPtrSub left_type, left, right))
                     else
 
                     (*simple and quick bugfix. Pretty sure it's not 100% correct, though.*)
@@ -1098,7 +1566,11 @@ let parse tokens =
                     let can_to_void_ptr = match op with Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> false | _ -> true in
 
                     let cmn_type =
-                        if Ast.isPointer left_type || Ast.isPointer right_type then
+                        if Ast.isStruct (typ left) && Ast.isStruct (typ right) then
+                            raise (ParserError "Cannot apply binary operations on structs")
+                        else if Ast.isUnion (typ left) && Ast.isUnion (typ right) then
+                            raise (ParserError "Cannot apply binary operations on unions")
+                        else if Ast.isPointer left_type || Ast.isPointer right_type then
                             get_common_ptr_type ~can_to_void_ptr:can_to_void_ptr ~can_convert_to_nullptr:can_implicit_cast_nullptr left right
                         else if Ast.isScalar left_type && Ast.isScalar right_type then
                             get_common_type left_type right_type
@@ -1113,7 +1585,7 @@ let parse tokens =
                     else
                         (cmn_type, Ast.Binary (op, new_left, new_right))
 
-                    in iter (nextToken()) return 
+                    in iter (nextToken()) return
             )else
                 left
         in iter peek left

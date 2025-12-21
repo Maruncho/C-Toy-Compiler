@@ -109,6 +109,8 @@ let process_declarator tokens base_type type_parser expr_parser =
         | L.INT
         | L.UNSIGNED
         | L.SIGNED
+        | L.STRUCT
+        | L.UNION
         | L.LONG -> true
         | _ -> false
 

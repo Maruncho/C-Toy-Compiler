@@ -233,7 +233,7 @@ let operand_str asm_type oper externalNames =
         | Pseudo id -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id
         | PseudoMem (id, off) -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id ^ "+" ^ (Int64.to_string off)
         | Data (id, scale_opt) ->
-            (if Environment.setMem id externalNames then id^"@PLT" else id) ^ 
+            (if Environment.setMem id externalNames then id(*^"@PLT"*) else id) ^ 
             (if Option.is_none scale_opt then "" else ("+" ^ (Int64.to_string (Option.get scale_opt))))^
             "(%rip)"
         | Memory (reg, num, index_opt, scale_opt) ->

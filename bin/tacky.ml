@@ -6,15 +6,21 @@ type binary_op = Add | Subtract | Multiply | Divide | Remainder |
                  And | Or | Xor | LShift | RShift |
                  Equal | NotEqual | LessThan | LessOrEqual | GreaterThan | GreaterOrEqual
 
+type struct_class =
+    | SINT | SXMM | SMEM
+    | SINTnINT | SINTnXMM | SXMMnINT | SXMMnXMM
+
 type typ = Int8 of bool | Int32 of bool | Int64 of bool (*is_signed*)
          | Float64
          | Ptr of typ
-         | ArrObj of typ * Int64.t
+         | ArrObj of typ * Int64.t * Int64.t (*size * align*)
+         | Struct of Int64.t * Int64.t (*size * align*) * struct_class
          | Void
 
 type constant = I of Z.t * typ
               | D of float
               | S of string
+              | SLab of string
               | ZeroInit of Int64.t
 
 type operand = Constant of constant
@@ -38,13 +44,14 @@ type instruction = Return of operand option
                  | DeclCompound of identifier * Int64.t * Int64.t(*align and count*)
                  | AddPtr of operand * operand * Int64.t * operand
                  | CopyToOffset of operand * operand * Int64.t
+                 | CopyFromOffset of operand * Int64.t * operand
                  | Jump of identifier
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
                  | Call of identifier * operand list * operand option
 
-type toplevel = Function of string * bool(*global*) * (identifier * typ) list * instruction list
+type toplevel = Function of string * bool(*global*) * (identifier * typ) list * typ * instruction list
               | StaticVariable of string * bool(*global*) * constant list * Int64.t(*size bytes*) * Int64.t(*alignment*)
               | StaticConst of string * constant list
 
@@ -58,6 +65,7 @@ let type_signed = function
     | Ptr _ -> failwith "Make the code so that type_signed is not used with pointers"
     | ArrObj _ -> failwith "Make the code so that type_signed is not used with array objects"
     | Void -> failwith "Make the code so that type_signed is not used with voids"
+    | Struct _ -> failwith "Make the code so that type_signed is not used with structs"
 
 let rec to_ast_type = function
     | Int8 true -> Ast.SChar
@@ -68,8 +76,19 @@ let rec to_ast_type = function
     | Int64 false -> Ast.ULong
     | Float64 -> Ast.Double
     | Ptr x -> Ast.Ptr (to_ast_type x)
-    | ArrObj (x, s) -> Ast.Array (to_ast_type x, s)
+    | ArrObj (x, s, _) -> Ast.Array (to_ast_type x, s)
     | Void -> Ast.Void
+    | Struct _ -> failwith "Cannot convert tacky struct back to Ast struct"
+
+let rec typ_size = function
+    | Int8 _ -> 1L
+    | Int32 _ -> 4L
+    | Int64 _ -> 8L
+    | Float64 -> 8L
+    | Ptr _ -> 8L
+    | ArrObj (typ, size, _) -> Int64.mul (typ_size typ) size
+    | Struct (size, _, _) -> size
+    | Void -> failwith "Nuh-uh"
 
 (*let type_float = function*)
 (*    | Float64 -> true*)
@@ -83,6 +102,7 @@ let number_zero typ = match typ with
     | Ptr _ -> I (Z.zero, Int64 false)
     | ArrObj _ -> failwith "Cannot number_zero an ArrObj"
     | Void -> failwith "Cannot number_zero a void"
+    | Struct _ -> failwith "Cannot number_zero a struct"
 
 let number_zero_operand typ = match typ with
     | Int8 _ -> Constant (I (Z.zero, typ))
@@ -92,10 +112,12 @@ let number_zero_operand typ = match typ with
     | Ptr _ -> Constant (I (Z.zero, Int64 false))
     | ArrObj _ -> failwith "Cannot number_zero_operand an ArrObj"
     | Void -> Constant (I (Z.zero, typ))
+    | Struct _ -> Constant (I (Z.zero, typ))
 
 let operand_type = function
     | Constant D _ -> Float64
     | Constant S _ -> Ptr (Int8 true)
+    | Constant SLab _ -> Ptr (Int8 true)
     | Constant I (_, t)
     | Var (_, t)
     | StaticVar (_, t) -> t
@@ -135,13 +157,24 @@ let rec typ_str = function
     | Int64 true -> "int64"
     | Float64 -> "float64"
     | Ptr x -> (typ_str x)^"_ptr"
-    | ArrObj (x, s) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
+    | ArrObj (x, s, _) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
     | Void -> "void"
+    | Struct _ -> "struct"
+
+let struct_class_str = function
+    | SMEM -> "MEMORY"
+    | SINT -> "INTEGER"
+    | SXMM -> "SSE"
+    | SINTnINT -> "INTEGER_INTEGER"
+    | SINTnXMM -> "INTEGER_SSE"
+    | SXMMnINT -> "SSE_INTEGER"
+    | SXMMnXMM -> "SSE_SSE"
 
 let constant_str = function
     | I (n, typ) -> (typ_str typ) ^ " " ^ Z.to_string n
     | D n -> (typ_str Float64) ^ " " ^ Float.to_string n
     | S str -> "StringLiteral " ^ str
+    | SLab str -> "StringLabel " ^ str
     | ZeroInit s -> "ZeroInit " ^ (Int64.to_string s)
 
 let operand_str oper =
@@ -171,6 +204,7 @@ let instruction_str inst =
         | DeclCompound (opr, aln, cnt) -> "DeclCompound("^(opr)^", "^(Int64.to_string aln)^" * "^(Int64.to_string cnt)^")\n"
         | AddPtr (s, i, sc, d) -> "AddPtr("^(operand_str s)^", "^(operand_str i)^" * "^(Int64.to_string sc)^", "^(operand_str d)^")\n"
         | CopyToOffset (s, d, o) -> "CopyToOffset("^(operand_str s)^", "^(operand_str d)^", "^(Int64.to_string o)^")\n"
+        | CopyFromOffset (s, o, d) -> "CopyFromOffset("^(operand_str s)^", "^(Int64.to_string o)^", "^(operand_str d)^")\n"
         | Jump lbl -> "Jump("^lbl^")\n"
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
@@ -180,7 +214,7 @@ let instruction_str inst =
 
 let toplevel_str tl =
     match tl with
-        | Function (name, is_global, params, instructions) ->
+        | Function (name, is_global, params, _, instructions) ->
             (if is_global then "global " else "") ^ name ^ "("^(String.concat ", " (List.map (fun (n, t) -> n^":"^(typ_str t)) params))^"):\n" ^
             List.fold_left (fun acc inst -> acc ^ (instruction_str inst)) "" instructions
         | StaticVariable (name, is_global, init, _, _) ->
