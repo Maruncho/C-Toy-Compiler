@@ -51,7 +51,7 @@ let const_to_tacky c typ = match c with
 (*    let modulo = Int64.rem current bytes in*)
 (*    if Int64.equal modulo 0L then 0L else Int64.sub bytes modulo*)
 (**)
-let alignStruct size aln = 
+let alignStruct size =
     let aln = if Int64.compare size 8L >= 0 then 8L else if Int64.compare size 4L >= 0 then 4L else if Int64.compare size 2L >= 0 then 2L else 1L in
     let cnt = Int64.div (Int64.add size (Int64.sub aln 1L)) aln in
     aln, cnt
@@ -63,7 +63,7 @@ let compound_align_and_count ast_typ =
     match ast_typ with
     | Ast.Union _
     | Ast.Struct _ ->
-        alignStruct size align
+        alignStruct size
     | _ ->
 
     let modulo = Int64.rem size align in
@@ -101,8 +101,8 @@ let makePointerIntoLong sign = function
         failwith "Don't use makePointerIntoLong with non-pointers"
 
 let changeOperandTypeEXPLICIT oper newTyp = match oper with
-    | Tac.Var (id, typ) -> Tac.Var(id, newTyp)
-    | Tac.StaticVar (id, typ) -> Tac.StaticVar(id, newTyp)
+    | Tac.Var (id, _) -> Tac.Var(id, newTyp)
+    | Tac.StaticVar (id, _) -> Tac.StaticVar(id, newTyp)
     | Tac.Constant _ -> failwith "Can't explicitly change type of Tac.Constant"
 
 let changePtrType oper new_ptr = match oper with
@@ -119,9 +119,9 @@ let tackify ast globalEnv =
     let newVar typ =
         let id = Temp.newTemp() in
         let () = match typ with
-            | Tac.Struct (s, a, _) ->
+            | Tac.Struct (s, _, _) ->
                 (*Mov instructions need to be byte aligned*)
-                let aln, cnt = alignStruct s a in
+                let aln, cnt = alignStruct s in
                 (Tac.DeclCompound (id,aln,cnt)) #: instrs
             | _ -> ()
         in (Tac.Var(id, typ))
@@ -226,8 +226,8 @@ let tackify ast globalEnv =
         | Ast.Float64 num -> Tac.D num
 
     and parseType ?(in_struct=false) = function
-        | Ast.Ptr (Ast.Struct {contents = {size;align}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
-        | Ast.Ptr (Ast.Union {contents = {size;align}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
+        | Ast.Ptr (Ast.Struct {contents = {size;align;_}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
+        | Ast.Ptr (Ast.Union {contents = {size;align;_}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
 
         | Ast.Char -> Tac.Int8 true
         | Ast.SChar -> Tac.Int8 true
@@ -242,10 +242,10 @@ let tackify ast globalEnv =
         | Ast.Void -> Tac.Void
         | Ast.FunType _ -> failwith "parseType should not handle funtype"
 
-        | Ast.Struct {contents = {size;mems;align;name}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ,off) -> typ, off) |> parseStructClass size name)
-        | Ast.Union {contents = {size;mems;align;name}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ) -> typ, 0L) |> parseStructClass size name)
+        | Ast.Struct {contents = {size;mems;align;_}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ,off) -> typ, off) |> parseStructClass size)
+        | Ast.Union {contents = {size;mems;align;_}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ) -> typ, 0L) |> parseStructClass size)
 
-    and parseStructClass size name mems =
+    and parseStructClass size mems =
         let rec flattenMems mems =
             let flattenMems = function
                 | (Ast.Array (typ, size), off) :: tail ->
@@ -266,11 +266,7 @@ let tackify ast globalEnv =
                 | [] -> []
             in (flattenMems mems) |> (List.sort (fun (_, off1) (_, off2) -> Int64.compare off1 off2))
 
-        in let () = print_endline (name^"'s size: "^(Int64.to_string size)) in
-        let () = print_endline ("\nname: " ^ name) in
-        let () = List.iter (fun (typ, off) -> print_endline ((Int64.to_string off) ^ ": " ^ (Ast.string_data_type typ))) mems in
-        let () = List.iter (fun (typ, off) -> print_endline ((Int64.to_string off) ^ ": " ^ (Ast.string_data_type typ))) (flattenMems mems) in
-        if (Int64.compare 16L size) < 0 || size = 0L then Tac.SMEM
+        in if (Int64.compare 16L size) < 0 || size = 0L then Tac.SMEM
         else
             let rec iter first8 prev mems = match mems with
                 (*unnecessary*)
@@ -295,9 +291,7 @@ let tackify ast globalEnv =
 
             in
                 let first, restOfMems = iter true None (flattenMems mems) in
-                let () = print_endline ("first: " ^ (match first with None -> "None" | Some x -> Tac.struct_class_str x)) in
                 let second, _ = iter false None restOfMems in
-                let () = print_endline ("second: " ^ (match second with None -> "None" | Some x -> Tac.struct_class_str x)) in
                 match (Option.get first, second) with
                     | (Tac.SINT, None) -> Tac.SINT
                     | (Tac.SXMM, None) -> Tac.SXMM
@@ -348,7 +342,6 @@ let tackify ast globalEnv =
             (Tac.Binary (op, src1, src2, dst)) #: instrs
 
     and cast old_type new_type tacExpr =
-        (*let () = print_string((Ast.string_data_type old_type) ^ " " ^ (Ast.string_data_type new_type) ^ " " ^ (Tac.typ_str (Tac.operand_type tacExpr)) ^ " \n") in*)
         if old_type = new_type then tacExpr else
 
         if (Ast.Void = new_type) then voidOperand else
@@ -361,9 +354,6 @@ let tackify ast globalEnv =
             let () = ((Tac.ZeroExtend (tacExpr, dst)) #: instrs) in
             dst
         else if (Ast.isPointer old_type) then
-            (*let () = prerr_endline ("Old: " ^ (Ast.string_data_type old_type)) in*)
-            (*let () = prerr_endline ("New: " ^ (Ast.string_data_type new_type)) in*)
-            (*let () = prerr_endline ("Oper: " ^ (Tac.operand_str tacExpr)) in*)
             if Ast.size new_type = 8 then (makePointerIntoLong (Ast.signed new_type) tacExpr) else
             let dst = newVar (parseType new_type) in
             let () = ((Tac.Truncate (tacExpr, dst)) #: instrs) in

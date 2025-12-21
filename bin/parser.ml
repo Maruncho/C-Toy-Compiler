@@ -285,10 +285,6 @@ let parse tokens =
 
     in let get_common_ptr_type ?(can_to_void_ptr=true) ?(can_convert_to_nullptr=true) e1 e2 = 
     let t1, t2 = typ e1, typ e2 in
-    (*let () = print_endline (Ast.string_data_type t1) in*)
-    (*let () = print_endline (Ast.string_data_type t2) in*)
-    (*let () = print_newline() in*)
-    (*let () = print_string (Ast.string_data_type t1 ^ "->" ^ (Ast.string_data_type t2) ^ "\n") in*)
     if Ast.compare_types t1 t2 then
         t2
     else if Ast.isIntegral t1 && is_nullptr_constant e1 && can_convert_to_nullptr then
@@ -569,7 +565,6 @@ let parse tokens =
     and parse_initialiser typ is_static env lvl =
         let struct_get_pad members struct_size = match members with
             | (_,typ1,off1) :: (_,_,off2) :: _ ->
-                let () = print_endline ((Int64.to_string off1) ^ " " ^ (Int64.to_string off2)) in
                 let size1 = Ast.indexing_size typ1 in
                 let offRel = Int64.sub off2 off1 in
                 Int64.sub offRel size1
@@ -584,9 +579,9 @@ let parse tokens =
         and fill_struct members size =
             let rec iter size = match size with
                 | 0L -> []
-                | x when size >= 8L -> (zeroInit Ast.Long) :: (iter (Int64.sub size 8L))
-                | x when size >= 4L -> (zeroInit Ast.Int) :: (iter (Int64.sub size 4L))
-                | x ->                 (zeroInit Ast.SChar) :: (iter (Int64.sub size 1L))
+                | _ when size >= 8L -> (zeroInit Ast.Long) :: (iter (Int64.sub size 8L))
+                | _ when size >= 4L -> (zeroInit Ast.Int) :: (iter (Int64.sub size 4L))
+                | _ ->                 (zeroInit Ast.SChar) :: (iter (Int64.sub size 1L))
             in match members with
                 | (_,_,off) :: _ ->
                     let sizeLeft = Int64.sub size off in
@@ -608,7 +603,7 @@ let parse tokens =
             | Ast.Char | Ast.SChar | Ast.UChar | Ast.Int | Ast.Double | Ast.UInt | Ast.Long | Ast.ULong -> failwith "For OCaml to stop complaining"
 
         in let str_to_compound typ t_expr = match (typ, t_expr) with
-            | (Ast.Array (arr_of_typ, length), (x, Ast.String str)) ->
+            | (Ast.Array (arr_of_typ, length), (_, Ast.String str)) ->
                 let str_length = String.length str in
                 if (Int64.of_int (str_length - 1)) > length then
                     raise (ParserError "String initializer exceeds array length.")
@@ -841,7 +836,7 @@ let parse tokens =
             | Some _ -> failwith "Impossible."
 
         in let rec fixOffsets mems = match mems with
-            | (id1, typ1, off1) :: (id2, typ2, off2) :: t ->
+            | (id1, typ1, off1) :: (id2, typ2, _) :: t ->
                 let size1 = Ast.indexing_size typ1 in
                 let aln2 = Ast.alignment ~in_struct:true typ2 in
 
@@ -863,7 +858,7 @@ let parse tokens =
                 let unpadded_size = Int64.add off typ_size in
                 let rec genSize acc = if acc >= unpadded_size then acc else genSize (Int64.add acc !struct_align) in
                 genSize 0L
-            | h :: t -> fixSize t
+            | _ :: t -> fixSize t
 
         in let mems = if nextToken() = L.LBRACE then
             let _ = eatToken() in
@@ -901,8 +896,6 @@ let parse tokens =
         (*fix offsets*)
         in let mems = fixOffsets mems
         in let struct_size = fixSize mems
-        in let () = print_endline (id ^ " size: " ^ (Int64.to_string struct_size ^ " align: " ^ (Int64.to_string !struct_align)))
-        in let () = print_endline ("\t" ^ (String.concat " " (List.map (fun (_,_,off) -> Int64.to_string off) mems)))
         in let () = expect L.SEMICOLON
 
         in let env = match (Environment.struct_find_opt id env) with
@@ -1008,7 +1001,6 @@ let parse tokens =
                 else
                     env
 
-        in let () = print_endline (id ^ " size: " ^ (Int64.to_string !union_size ^ " align: " ^ (Int64.to_string !union_align)))
         in (Ast.UnionDecl (id, mems)), env
 
     and parse_decl ?(forInit=false) env lvl =

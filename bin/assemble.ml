@@ -451,10 +451,10 @@ let rec parseInstruction inst =
                 (generateByteArrayCopy src (Asmt.Memory (Asmt.RAX, 0L, None, None)) size) @
                 [Asmt.Ret]
             else
-                (List.mapi (fun i (typ, s) ->
+                (List.mapi (fun i _ ->
                     let reg = Asmt.Reg (if i = 0 then Asmt.RAX else Asmt.RDX) in
                     Asmt.Binary (Asmt.QuadWord, Asmt.Xor, reg, reg)) ints) @
-                (List.mapi (fun i (typ, s) ->
+                (List.mapi (fun i _ ->
                     let reg = Asmt.Reg (if i = 0 then Asmt.XMM0 else Asmt.XMM1) in
                     Asmt.Binary (Asmt.Double, Asmt.Xor, reg, reg)) xmms) @
                 [Asmt.Ret]
@@ -615,11 +615,9 @@ let rec parseInstruction inst =
             Asmt.Unary (fst s_typ, unop, dst)]
 
         | Tac.Binary (binop, s1, s2, d) ->
-            (*let print (typ, signed) = (print_string (Asmt.type_to_string typ ^ " " ^ (if signed then "signed" else "unsigned") ^ "\n")) in *)
             let (s1_typ, src1) = parseOperand s1 in
             let (s2_typ, src2) = parseOperand s2 in
             let (d_typ, dst) = parseOperand d in
-            (*let () = print s1_typ; print s2_typ; print d_typ in*)
             if (s1_typ <> s2_typ)  then failwith "DEBUG: Assemble: SRC1 and SRC2 types mismatch in BINARY." else
             if not (isConditional binop) && (s2_typ <> d_typ) then failwith "DEBUG: Assemble: SRC1, SRC2 and DST types mismatch." else
             chooseBinop binop src1 src2 dst s1_typ
@@ -844,7 +842,7 @@ let parseProgram tacky =
     let rec iter tls = match tls with
         | Tac.Function (name, is_global, params, ret_type, instructions) :: rest ->
             let return_in_memory = match ret_type with Tac.Struct (_,_,Tac.SMEM) -> true | _ -> false in
-            let (names, types) = List.split params in
+            let (_, types) = List.split params in
             let types_and_srcs = classify_parameters types return_in_memory in
 
             let names = (List.map (fun (name, typ) ->
@@ -975,7 +973,7 @@ let replacePseudos (name, instructions, return_in_memory, is_global) =
             | 4L -> (o16, o8, o4 + (Int64.to_int count), o2, o1)
             | 2L -> (o16, o8, o4, o2 + (Int64.to_int count), o1)
             | 1L -> (o16, o8, o4, o2, o1 + (Int64.to_int count))
-            | x -> failwith "INVALID OFFSET"
+            | _ -> failwith "INVALID OFFSET"
         end
 
         | Asmt.Jmp _
@@ -1356,7 +1354,6 @@ let fixUp (name, instructions, is_global) allocateBytes =
             (*    let src_low_off = Int64.min src_off1 src_off2 in*)
             (*    let dst_low_off = Int64.min dst_off1 dst_off2 in*)
             (*    (Asmt.Mov (Asmt.QuadWord, Asmt.Memory (Asmt.RBP, src_low_off, None, None), Asmt.Memory (Asmt.RBP, dst_low_off, None, None))) :: (combineSequentialMoves3 t)*)
-            (**)
 
             | h :: t -> h :: (combineSequentialMoves3 t)
         in instrs |> combineSequentialMoves1 |> combineSequentialMoves2 |> combineSequentialMoves3
