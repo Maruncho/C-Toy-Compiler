@@ -747,7 +747,7 @@ let rec parseInstruction inst =
 
         | Tac.Label lbl ->
             [Asmt.Label lbl]
-        | Tac.Call (name, params, dst) ->
+        | Tac.Call (name, params, dst, is_variadic) ->
             let int_dsts, xmm_dsts, return_in_memory = (match dst with
                 | Some dst -> classify_return dst
                 | None -> [], [], false
@@ -804,6 +804,13 @@ let rec parseInstruction inst =
                 (List.rev inStack) |> List.flatten in
             let stackInstrs = if extraPadding then (Asmt.AllocateStack 8L) :: stackInstrs else stackInstrs in
 
+            (if is_variadic then
+                let xmms = List.fold_left (fun acc ((_, oper), _) ->
+                match oper with Asmt.Reg xmm when Asmt.isXMM xmm -> acc+1 | _ -> acc) 0 inReg
+                in [Asmt.Mov (Asmt.Byte, Asmt.Imm (Z.of_int xmms), Asmt.Reg Asmt.RAX)]
+            else
+                [])
+            @
             match dst with
             | Some dst ->
 

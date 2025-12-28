@@ -188,7 +188,7 @@ let tackify ast globalEnv =
             | typ, Ast.Assignment (var, expr) -> typ, Ast.Assignment (walkExpr var, walkExpr expr)
             | typ, Ast.Ternary (cond_sp, th, el) -> typ, Ast.Ternary (cond_sp, walkExpr th, walkExpr el)
             | typ, Ast.Cast (new_typ, expr) -> typ, Ast.Cast (new_typ, walkExpr expr)
-            | typ, Ast.Call (id, args) -> typ, Ast.Call (id, List.map walkExpr args)
+            | typ, Ast.Call (id, args, is_variadic) -> typ, Ast.Call (id, List.map walkExpr args, is_variadic)
             | typ, Ast.Literal lit -> typ, Ast.Literal lit
             | typ, Ast.String str -> typ, Ast.String str
             | typ, Ast.SizeOf t_expr -> typ, Ast.SizeOf (walkExpr t_expr)
@@ -668,14 +668,14 @@ let tackify ast globalEnv =
                 let () = (Tac.Label end_lbl) #: instrs in
                 PlainOperand result
 
-            | typ, Ast.Call (name, args) ->
+            | typ, Ast.Call (name, args, is_variadic) ->
                 let args = List.map (fun arg -> parseExpr_lval_convert arg) args in
                 if typ = Ast.Void then
-                    let () = (Tac.Call (name, args, None)) #: instrs in
+                    let () = (Tac.Call (name, args, None, is_variadic)) #: instrs in
                     PlainOperand voidOperand
                 else
                     let dst = newVar(parseType typ) in
-                    let () = (Tac.Call (name, args, Some dst)) #: instrs in
+                    let () = (Tac.Call (name, args, Some dst, is_variadic)) #: instrs in
                     PlainOperand dst
 
             | typ, Ast.Dot (expr, _, off) ->
@@ -879,7 +879,7 @@ let tackify ast globalEnv =
     in let rec parseTopLevel tls = match tls with
         | [] -> []
         | tl :: rest -> begin match tl with
-            | Ast.FunDecl (name, params, block_items, ret_type, _) ->
+            | Ast.FunDecl (name, params, block_items, ret_type, _, _) ->
                 let is_global = begin match Environment.find_opt name globalEnv with
                     | None -> failwith "DEBUG: Function found in AST, but not in globalEnv"
                     | Some (Environment.VarAttr _) -> failwith "DEBUG: Function found in AST, but var found in globalEnv"
@@ -921,7 +921,7 @@ let tackify ast globalEnv =
                     let nums = if Int64.compare pad 0L > 0 then nums @ [Tac.ZeroInit pad] else nums in
                     (Tac.StaticVariable (id, is_global, nums, Ast.indexing_size typ, Ast.alignment typ)) :: acc
             end
-        | Environment.FunAttr ((id,_,_,is_defined),is_global) ->
+        | Environment.FunAttr ((id,_,_,is_defined, _),is_global) ->
             let () = if (not is_defined) && is_global then undefinedNames := Environment.setAdd id !undefinedNames
             in acc
     ) globalEnv []
@@ -974,12 +974,12 @@ let tackify ast globalEnv =
                         | Tac.JumpIfNotZero ((Tac.Constant D num), lbl) ->
                             Tac.JumpIfNotZero (Tac.StaticVar ((Label.getLabelDouble num), Tac.Float64), lbl) :: iter rest
 
-                        | Tac.Call (name, args, dst) ->
+                        | Tac.Call (name, args, dst, is_variadic) ->
                             let new_args = List.map (fun arg -> match arg with
                                 | Tac.Constant D num -> Tac.StaticVar (Label.getLabelDouble num, Tac.Float64)
                                 | _ -> arg
                             ) args in
-                            Tac.Call (name, new_args, dst) :: iter rest
+                            Tac.Call (name, new_args, dst, is_variadic) :: iter rest
 
                         | _ -> h :: iter rest
                     end

@@ -17,7 +17,7 @@ and union_data = {name: identifier; mems: union_member_data list; size: Int64.t;
 
 type var_type = AutoVariable of data_type
               | StaticVariable of data_type
-              | Function of data_type list * data_type
+              | Function of data_type list * data_type * bool(*is_variadic*)
 
 type unary_op = Complement | Negate | LogNot | Increment | Decrement | Rvalue(*unary plus*)
               | PtrIncrement | PtrDecrement
@@ -42,7 +42,7 @@ and expr = Literal of lit
          | BinaryAssign of binary_op * typed_expr * typed_expr * (data_type option) (*cast to rhs type if necessary*)
          | Assignment of typed_expr * typed_expr
          | Ternary of typed_expr_sp * typed_expr * typed_expr
-         | Call of identifier * typed_expr list
+         | Call of identifier * typed_expr list * bool(*is_variadic*)
          | Dot of typed_expr * identifier * Int64.t
          | Arrow of typed_expr * identifier * Int64.t
          | SizeOf of typed_expr
@@ -86,7 +86,7 @@ and initialiser = SingleInit of typed_expr | CompoundInit of initialiser list | 
 and var_decl = identifier * initialiser option * data_type * storage_class option
 and var_decl_sp = var_decl * postfix
 
-and fun_decl = identifier * (data_type * identifier) list * block option * data_type * storage_class
+and fun_decl = identifier * (data_type * identifier) list * block option * data_type * storage_class * bool(*is_variadic*)
 
 and struct_decl = identifier * (identifier * data_type) list
 and union_decl = struct_decl
@@ -494,7 +494,7 @@ let rec print_expr tabs expr =
             print_typed_expr (tabs+1) el;
             print_string (")")
 
-        | Call (name, args) ->
+        | Call (name, args, _) ->
             print_string ("Call("^name^",\n");
             List.iter (fun x -> print_typed_expr (tabs+1) x; print_string "\n") args;
             print_string (")")
@@ -609,9 +609,10 @@ and print_decl tabs decl =
                             print_initialiser (tabs+1) init;
                             print_string ")\n"
             end
-        | FunDecl (id, params, body, ret_typ, storage) ->
+        | FunDecl (id, params, body, ret_typ, storage, is_variadic) ->
             print_string ((string_storage_specifier storage)^"<fn "^id^"> -> "^(string_data_type ret_typ)^" (");
             print_string (String.concat ", " (List.map (fun (typ, name) -> (string_data_type typ)^" "^name) params));
+            if is_variadic then (print_string ", ...");
             begin match body with
                 | None -> print_string ")\n"
                 | Some body ->

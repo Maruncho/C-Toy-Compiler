@@ -746,13 +746,13 @@ let parse tokens =
         in let () = expect L.SEMICOLON
         in (Ast.VarDecl (newId, initialiser, typ, storage), newEnv)
 
-    and parse_fun_decl (ret_type, (param_names, param_types), storage, id) env lvl =
+    and parse_fun_decl (ret_type, (param_names, param_types), storage, id, is_variadic) env lvl =
 
         let storage = match storage with None -> Ast.Extern | Some s -> s in
 
         (* Parse parameters *)
         let tempEnv = Environment.add id
-            (Environment.Func (id, [], ret_type, false), (*dummy function so we can know later whether it was shadowed by a paramter*)
+            (Environment.Func (id, [], ret_type, false, false), (*dummy function so we can know later whether it was shadowed by a paramter*)
              lvl)
             env in
 
@@ -771,13 +771,15 @@ let parse tokens =
         let bodyEnv = match Option.get (Environment.find_opt id paramsEnv) with
             | (Environment.Func _, _) -> 
                 Environment.add id
-                ((Environment.Func (id, param_types, ret_type, true(*doesn't matter. Definitions are not allowed in body.*))),
+                ((Environment.Func (id, param_types, ret_type, true, false(*doesn't matter. Definitions are not allowed in body.*))),
                  lvl)
                 paramsEnv
             | _ -> paramsEnv (* A parameter shadowed the function declaration *)
 
         in let body = match nextToken() with
-            | L.LBRACE -> let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1) ret_type)
+            | L.LBRACE ->
+                if is_variadic then raise (ParserError "This compiler does not support variadic function definitions") else
+                let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1) ret_type)
             | _ -> let () = expect L.SEMICOLON in None
         in
         (*-----------------------*)
@@ -792,11 +794,11 @@ let parse tokens =
         (*------------------*)
 
 
-        let (newEnv, gEnv) = try Environment.tryAddFunction env !globalEnv lvl storage id param_types ret_type body
+        let (newEnv, gEnv) = try Environment.tryAddFunction env !globalEnv lvl storage id param_types ret_type body is_variadic
             with Environment.EnvironmentError s -> raise (ParserError s)
         in let () = globalEnv := gEnv
 
-        in (Ast.FunDecl (id, List.combine param_types param_names, body, ret_type, storage), newEnv)
+        in (Ast.FunDecl (id, List.combine param_types param_names, body, ret_type, storage, is_variadic), newEnv)
 
     and checkForUndeclaredStructs typ env lvl = match typ with
         | Ast.Struct {contents={name;_}} -> 
@@ -866,7 +868,7 @@ let parse tokens =
             let rec iter ?(first=false) seen = match nextToken() with
                 | x when isTypeSpec x ->
                     let typ = parse_type_spec None env in
-                    let (id, typ, _) = try
+                    let (id, typ, _, _) = try
                             ParserDeclarator.process_declarator tokens typ
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
@@ -945,7 +947,7 @@ let parse tokens =
             let rec iter seen = match nextToken() with
                 | x when isTypeSpec x ->
                     let typ = parse_type_spec None env in
-                    let (id, typ, _) = try
+                    let (id, typ, _, _) = try
                             ParserDeclarator.process_declarator tokens typ
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
@@ -1013,7 +1015,7 @@ let parse tokens =
         | _ ->
 
         let () = checkForUndeclaredStructs typ env lvl in
-        let (id, typ, maybe_params) = try
+        let (id, typ, maybe_params, is_variadic) = try
                 ParserDeclarator.process_declarator tokens typ
                     (fun () -> parse_type_spec None env)
                     (fun () -> parse_expr env lvl)
@@ -1022,7 +1024,7 @@ let parse tokens =
             | Ast.FunType (param_types, ret_type) ->
                 if forInit then raise (ParserError "Cannot declare function in a for initilalization clause") else
                 if Ast.isArray ret_type then raise (ParserError "Cannot return an array type.") else
-                parse_fun_decl (ret_type, (maybe_params, param_types), storage, id) env lvl
+                parse_fun_decl (ret_type, (maybe_params, param_types), storage, id, is_variadic) env lvl
             | _ ->
                 parse_var_decl (typ, storage, id) env lvl
 
@@ -1136,7 +1138,7 @@ let parse tokens =
             with ParserError e -> raise (ParserError ("Expected statement\n" ^ e))
         in result @ flushPostfix()
 
-    and parse_args env lvl paramTypes =
+    and parse_args env lvl paramTypes is_variadic =
         let originalCount = List.length paramTypes in
         let original = string_of_int originalCount in
         let rec iter paramTypes count no_comma =
@@ -1145,12 +1147,19 @@ let parse tokens =
                 if count > 0 then raise (ParserError ("Argument count is more than " ^ original))
                 else let _ = eatToken() in []
             | _ ->
-                if count <= 0 then raise (ParserError ("Argument count is less than " ^ original)) else
-                let [@warning "-8"] param_typ :: rest = paramTypes in
-                let arg = parse_expr env lvl in
-                if not (Ast.isComplete (typ arg)) then raise (ParserError "Function arguments must be of a complete type") else
-                let arg = implicit_convert_to arg param_typ in
-                begin match nextToken() with
+                if (not is_variadic) && count <= 0 then raise (ParserError ("Argument count is less than " ^ original)) else
+
+                let arg, rest = if is_variadic && count <= 0 then
+                    let arg = parse_expr env lvl in
+                    if not (Ast.isComplete (typ arg)) then raise (ParserError "Function arguments must be of a complete type") else
+                    arg, []
+                else
+                    let [@warning "-8"] param_typ :: rest = paramTypes in
+                    let arg = parse_expr env lvl in
+                    if not (Ast.isComplete (typ arg)) then raise (ParserError "Function arguments must be of a complete type") else
+                    implicit_convert_to arg param_typ, rest
+
+                in begin match nextToken() with
                     | L.COMMA -> let _ = eatToken() in arg :: (iter rest (count-1) false)
                     | _ -> arg :: (iter rest (count-1) true)
                 end
@@ -1186,7 +1195,7 @@ let parse tokens =
                             decay_arr (typ, (Ast.Var (realId, Ast.StaticVariable typ)))
                         | Environment.StaticVar (realId, typ) ->
                             typ, (Ast.Var (realId, Ast.StaticVariable typ))
-                        | Environment.Func (id, paramTypes, retType, _) -> retType, (Ast.Var (id, Ast.Function (paramTypes, retType)))
+                        | Environment.Func (id, paramTypes, retType, _, is_variadic) -> retType, (Ast.Var (id, Ast.Function (paramTypes, retType, is_variadic)))
                         | Environment.Struct _ -> failwith "Impossible struct in parse_primary"
                         | Environment.Union _ -> failwith "Impossible union in parse_primary"
                     end
@@ -1207,12 +1216,12 @@ let parse tokens =
                 let () = schedulePostfixDecr left in
                 iter (nextToken()) (typ left, Ast.Unary (Ast.Rvalue, left))
             | L.LPAREN ->
-                let id, paramsTypes, retType = begin match left with (_, Ast.Var (id, Ast.Function (paramsTypes, retType))) -> id, paramsTypes, retType
+                let id, paramsTypes, retType, is_variadic = begin match left with (_, Ast.Var (id, Ast.Function (paramsTypes, retType, is_variadic))) -> id, paramsTypes, retType, is_variadic
                                                      | _ -> raise (ParserError "Cannot call a variable.") end in
                 if not (Ast.isComplete retType) && Ast.Void <> retType then raise (ParserError "Cannot call function with incomplete data type.") else
                 let _ = eatToken() in
-                let args = parse_args env lvl paramsTypes in
-                iter (nextToken()) (retType, Ast.Call (id, args))
+                let args = parse_args env lvl paramsTypes is_variadic in
+                iter (nextToken()) (retType, Ast.Call (id, args, is_variadic))
 
             | L.LBRACK ->
                 let _ = eatToken() in

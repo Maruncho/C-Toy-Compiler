@@ -81,6 +81,7 @@ type token =
     | LSHIFTASSIGN
     | RSHIFTASSIGN
     | COMMA
+    | ELLIPSIS
     | EOF
 
 let string_of_token = function
@@ -162,6 +163,7 @@ let string_of_token = function
     | LSHIFTASSIGN -> "<<="
     | RSHIFTASSIGN -> ">>="
     | COMMA -> ","
+    | ELLIPSIS -> "..."
     | EOF -> "eof"
 
 let re regex = Re.seq [Re.bos; Re.Perl.re regex; Re.Perl.re {|((?:.|\s)*)|}] |> Re.compile
@@ -376,6 +378,9 @@ let token_regexes =
 ;
     (* , *)
     (re {|(,)|}, (fun _ -> COMMA))
+;
+    (* ... *)
+    (re {|(\.\.\.)|}, (fun _ -> ELLIPSIS))
 ;
     (* . *)
     (reDot {|(\.)|}, (fun _ -> DOT))

@@ -10,6 +10,7 @@ type declarator = Ident of identifer
                 | PointerDeclarator of declarator
                 | ArrayDeclarator of declarator * size
                 | FunDeclarator of param_info list * declarator
+                | Ellipsis
 
 and param_info = Ast.data_type * declarator
 
@@ -170,10 +171,18 @@ let process_declarator tokens base_type type_parser expr_parser =
                 else
                     (typ, decl) :: []
 
+            | L.ELLIPSIS ->
+                let _ = eatToken() in
+                if nextToken() = L.COMMA then
+                    raise (ParserDeclaratorError ("Variadic functions cannot have named parameters after the ellipsis."))
+                else
+                    (Ast.Void, Ellipsis) :: []
+
             | t -> raise (ParserDeclaratorError ("Expected parameter, but got " ^ (L.string_of_token t)))
 
     in let rec process_declarator declarator base_type = match declarator with
-        | Ident name -> (name, base_type, [])
+        | Ellipsis -> failwith "Ellipsis outside of function"
+        | Ident name -> (name, base_type, [], false)
         | PointerDeclarator subDecl ->
             let derived_type = Ast.Ptr base_type in
             (process_declarator subDecl derived_type)
@@ -183,8 +192,11 @@ let process_declarator tokens base_type type_parser expr_parser =
             (process_declarator subDecl derived_type)
         | FunDeclarator (params, subDecl) -> begin match subDecl with
             | Ident name ->
+                let ellipsis, params = List.partition (fun (_, p_decl) -> p_decl = Ellipsis) params in
+                let is_variadic = not (List.is_empty ellipsis) in
+
                 let (p_types, p_names) = List.fold_left (fun (acc_types, acc_names) (param_t, param_decl) -> (
-                    let name, typ, _ = process_declarator param_decl param_t in
+                    let name, typ, _, _ = process_declarator param_decl param_t in
                     if typ = Ast.Void then raise (ParserDeclaratorError "Cannot declare void parameters.") else
                     let () = begin match typ with
                         | Ast.FunType _ -> raise (ParserDeclaratorError "Function pointers in parameters aren't supported")
@@ -194,7 +206,7 @@ let process_declarator tokens base_type type_parser expr_parser =
                 )) ([],[]) params
                 in
                 let derived_type = Ast.FunType (p_types |> List.rev, base_type) in
-                (name, derived_type, p_names |> List.rev)
+                (name, derived_type, p_names |> List.rev, is_variadic)
             | _ -> raise (ParserDeclaratorError "Can't apply additional type derivations to a function type")
         end
 

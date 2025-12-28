@@ -111,7 +111,7 @@ let parse (program:Ast.program) =
         in checkGotos env newAst 
 
     in let parseToplevel = function
-            | Ast.FunDecl (name, params, Some body, retType, storage) -> Ast.FunDecl (name, params, Some (parseBlock body), retType, storage)
+            | Ast.FunDecl (name, params, Some body, retType, storage, is_variadic) -> Ast.FunDecl (name, params, Some (parseBlock body), retType, storage, is_variadic)
         | x -> x
     in
     match program with

@@ -1,5 +1,5 @@
 
-type fun_data = string * Ast.data_type list * Ast.data_type * bool (* name, params, ret_type, is_defined *)
+type fun_data = string * Ast.data_type list * Ast.data_type * bool * bool (* name, params, ret_type, is_defined, is_variadic*)
 
 type initial_value = Tentative | Initial of (Const.result * Ast.data_type) list | NoInitializer
 
@@ -184,7 +184,7 @@ let tryAddVariable (localEnv: env) (globalEnv: envGlobal) level storage_opt iden
                         end
                 end
 
-let tryAddFunction (localEnv: env) (globalEnv: envGlobal) level storage identifier param_types ret_type body_opt = 
+let tryAddFunction (localEnv: env) (globalEnv: envGlobal) level storage identifier param_types ret_type body_opt is_variadic = 
 let thisIsDefined = Option.is_some body_opt in
 let compareParams pExp pAct fnName =
     let pExpLength = List.length pExp in
@@ -210,10 +210,10 @@ let addFunction is_external =
             | Union _ -> failwith "Impossible."
     end in
     match find_opt identifier globalEnv with
-        | None -> let fn = (identifier, param_types, ret_type, thisIsDefined) in
+        | None -> let fn = (identifier, param_types, ret_type, thisIsDefined, is_variadic) in
                   (add identifier (Func fn, level) localEnv, add identifier (FunAttr (fn, is_external)) globalEnv)
         | Some (VarAttr _) -> raise (EnvironmentError ("Identifier "^identifier^" is already a global variable"))
-        | Some (FunAttr ((_, oldParamTypes, oldRetType, hasBody), wasExternal)) ->
+        | Some (FunAttr ((_, oldParamTypes, oldRetType, hasBody, wasVariadic), wasExternal)) ->
             if thisIsDefined && hasBody then
                 raise (EnvironmentError ("Re-definition of "^identifier^" is not allowed")) else
             let () = compareParams oldParamTypes param_types identifier in
@@ -221,8 +221,10 @@ let addFunction is_external =
                 raise (EnvironmentError ("Inconsistent declaration of "^identifier^", Expected return type of "^(Ast.string_data_type oldRetType)^", but got "^(Ast.string_data_type ret_type)^".")) else
             if is_external <> wasExternal then
                 raise (EnvironmentError ("Cannot declare function static and extern: "^identifier)) else
+            if is_variadic <> wasVariadic then
+                raise (EnvironmentError ("Re-declaration of "^identifier^" is not variadic")) else
             let defined = hasBody || thisIsDefined in
-            let fn = (identifier, param_types, ret_type, defined) in
+            let fn = (identifier, param_types, ret_type, defined, is_variadic) in
             (add identifier (Func fn, level) localEnv, add identifier (FunAttr (fn, is_external)) globalEnv)
     in
 

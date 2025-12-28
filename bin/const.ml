@@ -241,7 +241,7 @@ let parseConstExpr typed_expr =
                 if (match cond with I c -> Z.compare c Z.zero <> 0 | D c -> Float.compare c Float.zero <> 0 | S _ | SLab _ -> raise (ConstError "Can't use string literals as booleans") | Z _ -> failwith "Impossible")
                 then parse th seen else parse el seen
 
-            | (_, Ast.Call (_, _)) ->
+            | (_, Ast.Call (_, _, _)) ->
                 raise (ConstError "Cannot call functions in constant expresisons")
 
             | (_, Ast.Dot (_, _, _)) ->

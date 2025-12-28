@@ -49,7 +49,7 @@ type instruction = Return of operand option
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
-                 | Call of identifier * operand list * operand option
+                 | Call of identifier * operand list * operand option * bool(*is_variadic*)
 
 type toplevel = Function of string * bool(*global*) * (identifier * typ) list * typ * instruction list
               | StaticVariable of string * bool(*global*) * constant list * Int64.t(*size bytes*) * Int64.t(*alignment*)
@@ -209,8 +209,8 @@ let instruction_str inst =
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
         | Label lbl -> "Label("^lbl^")\n"
-        | Call (name, params, Some dst) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
-        | Call (name, params, None) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
+        | Call (name, params, Some dst, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
+        | Call (name, params, None, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
 
 let toplevel_str tl =
     match tl with
