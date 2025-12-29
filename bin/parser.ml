@@ -461,7 +461,7 @@ let parse tokens =
         in let (cases,stmt) = parseStmt body in (cases, stmt, !default)
 
     and parse_type_spec ?(in_decl=false) list_opt env =
-        let rec iter() = match nextToken() with
+        let rec iter ?(first=false) () = match nextToken() with
             | L.VOID
             | L.CHAR
             | L.INT
@@ -471,14 +471,18 @@ let parse tokens =
             | L.DOUBLE ->
                 let t = eatToken() in t :: iter()
             | L.ID id when Environment.type_mem id env ->
-                let t = eatToken() in t :: iter()
+                (*Nasty C grammar. If a type alias is not a first type specifier, it's variable identifer*)
+                if not first then
+                    []
+                else
+                    let t = eatToken() in t :: iter()
             | L.STRUCT | L.UNION ->
                 let t = eatToken() in
                 let id = expectIdentifier() in
                 t :: (L.ID id) :: iter()
             | _ -> []
 
-        in let lst = match list_opt with | None -> iter() | Some lst -> lst
+        in let lst = match list_opt with | None -> iter ~first:true () | Some lst -> lst
         in if List.is_empty lst then raise (ParserError "No type specifier.") else
 
         (*structs*)
@@ -564,7 +568,7 @@ let parse tokens =
 
 
     and parse_specifiers ?(in_decl=false) env =
-        let rec iter typ storage = match nextToken() with
+        let rec iter ?(first=false) typ storage = match nextToken() with
             | L.EXTERN -> let _ = eatToken() in
                           if Option.is_some storage then raise (ParserError "Invalid storage class")
                           else iter typ (Some Ast.Extern)
@@ -585,12 +589,19 @@ let parse tokens =
                           let id = expectIdentifier() in
                           iter (t :: (L.ID id) :: typ) storage
 
+            | L.ID id as x when isTypeSpec env x -> 
+                (*Nasty C grammar. If a type alias is not a first type specifier, it's variable identifer*)
+                if not first then
+                    (typ, storage)
+                else
+                    iter (eatToken() :: typ) storage
+
             | x when isTypeSpec env x -> 
                 iter (eatToken() :: typ) storage
 
 
             | _ -> (typ, storage)
-        in let (typ, storage) = iter [] None in
+        in let (typ, storage) = iter ~first:true [] None in
         (parse_type_spec ~in_decl:in_decl (Some typ) env, storage)
 
     and parse_initialiser typ is_static env lvl =

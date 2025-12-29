@@ -1,18 +1,13 @@
 
-struct myType {
-    int x;
-    int y;
-};
+typedef int AA;
 
-typedef struct myType myType;
-typedef myType *myTypePtr;
+int foo(void)
+{
+  AA AA = 10;
+  int BB = AA * 2;
+  return BB;
+}
 
 int main(void) {
-
-    myType var = { 10, 20 };
-    myTypePtr varPtr = &var;
-
-    int sum = var.x + varPtr->y;
-
-    return sum;
+   return foo();
 }
