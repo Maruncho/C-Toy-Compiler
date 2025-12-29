@@ -77,6 +77,7 @@ let process_abstract_declarator tokens base_type expr_parser =
             (process_abstract_declarator subDecl derived_type)
         | AbstractArray (subDecl, size) ->
             if not (Ast.isComplete base_type) then raise (ParserDeclaratorError "Can't declare an array of incomplete type") else
+            if (Ast.isFunctionType base_type) then raise (ParserDeclaratorError "Can't declare an array of function type") else
             let derived_type = Ast.Array (base_type, size) in
             (process_abstract_declarator subDecl derived_type)
 
@@ -90,7 +91,7 @@ let process_abstract_declarator tokens base_type expr_parser =
         process_abstract_declarator decl base_type
 
 
-let process_declarator tokens base_type type_parser expr_parser =
+let process_declarator tokens base_type isTypeSpecFun type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
@@ -103,17 +104,6 @@ let process_declarator tokens base_type type_parser expr_parser =
     in let expect expected = let t = eatToken() in if t <> expected then
                              raise (ParserDeclaratorError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
-    in let isTypeSpec = function
-        | L.VOID
-        | L.DOUBLE
-        | L.CHAR
-        | L.INT
-        | L.UNSIGNED
-        | L.SIGNED
-        | L.STRUCT
-        | L.UNION
-        | L.LONG -> true
-        | _ -> false
 
     in let rec parseSimpleDeclarator() = match nextToken() with
         | L.LPAREN -> let _ = eatToken() in
@@ -160,7 +150,7 @@ let process_declarator tokens base_type type_parser expr_parser =
         | _ -> parseDirectDeclarator()
 
     and parseParamList() = match nextToken() with
-            | x when isTypeSpec x ->
+            | x when isTypeSpecFun x ->
                 let typ = type_parser() in
 
                 let decl = parseDeclarator() in
@@ -182,16 +172,23 @@ let process_declarator tokens base_type type_parser expr_parser =
 
     in let rec process_declarator declarator base_type = match declarator with
         | Ellipsis -> failwith "Ellipsis outside of function"
-        | Ident name -> (name, base_type, [], false)
+        | Ident name ->
+            if Ast.isFunctionType base_type then
+                raise (ParserDeclaratorError "Cannot declare function type variables")
+            else
+                (name, base_type, [], false)
         | PointerDeclarator subDecl ->
             let derived_type = Ast.Ptr base_type in
             (process_declarator subDecl derived_type)
         | ArrayDeclarator (subDecl, size) ->
             if not (Ast.isComplete base_type) then raise (ParserDeclaratorError "Can't declare an array of incomplete type") else
+            if (Ast.isFunctionType base_type) then raise (ParserDeclaratorError "Can't declare an array of function type") else
             let derived_type = Ast.Array (base_type, size) in
             (process_declarator subDecl derived_type)
         | FunDeclarator (params, subDecl) -> begin match subDecl with
             | Ident name ->
+                if (Ast.isFunctionType base_type) then raise (ParserDeclaratorError "Functions cannot return other functions") else
+
                 let ellipsis, params = List.partition (fun (_, p_decl) -> p_decl = Ellipsis) params in
                 let is_variadic = not (List.is_empty ellipsis) in
 

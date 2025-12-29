@@ -176,7 +176,7 @@ let parse tokens =
         | (_, Ast.Subscript _) -> true
         | (_, Ast.Dot (expr, _, _)) -> isLvalue ~imAddressOfOperator:true expr
         | (_, Ast.Arrow _) -> true
-        | (_, Ast.String _) -> imAddressOfOperator || false
+        | (_, Ast.String _) -> imAddressOfOperator
         | _ -> false
 
     in let isTernary = function
@@ -202,7 +202,8 @@ let parse tokens =
         | L.ASTERISK | L.SLASH | L.PERCENT -> 13
         | _ -> -1
 
-    in let isTypeSpec = function
+    in let isTypeSpec env = function
+        | L.ID id when Environment.type_mem id env -> true
         | L.VOID
         | L.DOUBLE
         | L.CHAR
@@ -214,15 +215,17 @@ let parse tokens =
         | L.STRUCT -> true
         | _ -> false
 
-    in let isDecl = function
+    in let isDecl env = function
+        | L.TYPEDEF
         | L.STATIC
         | L.EXTERN -> true
-        | x -> isTypeSpec x
+        | x -> isTypeSpec env x
 
-    in let isDeclForInit = function
+    in let isDeclForInit env = function
+        | L.TYPEDEF
         | L.STATIC
         | L.EXTERN -> failwith "Cannot use storage class specifiers in for loop initializer declaration"
-        | x -> isTypeSpec x
+        | x -> isTypeSpec env x
 
     in let parseLiteral tok =
         let lit = match tok with
@@ -353,7 +356,7 @@ let parse tokens =
                items @ parse_block_items env' lvl fn_return_type
 
     and parse_block_item env lvl fn_return_type = match nextToken() with
-        | t when isDecl t ->
+        | t when isDecl env t ->
             let (item, env') = parse_decl env lvl in
             (Ast.D item :: (List.map (fun x -> Ast.S x) (flushPostfix())), env')
 
@@ -362,7 +365,7 @@ let parse tokens =
 
     and parse_for_init env lvl = match nextToken() with
         | L.SEMICOLON -> let _ = eatToken() in None, env
-        | t when isDeclForInit t ->
+        | t when isDeclForInit env t ->
             let [@warning "-8"] (Ast.VarDecl item, env') = parse_decl ~forInit:true env lvl in (*suppress FunDecl unmatched warning*)
             (Some (Ast.InitDecl (item, flushPostfix())), env')
 
@@ -465,7 +468,10 @@ let parse tokens =
             | L.LONG
             | L.SIGNED
             | L.UNSIGNED
-            | L.DOUBLE -> let t = eatToken() in t :: iter()
+            | L.DOUBLE ->
+                let t = eatToken() in t :: iter()
+            | L.ID id when Environment.type_mem id env ->
+                let t = eatToken() in t :: iter()
             | L.STRUCT | L.UNION ->
                 let t = eatToken() in
                 let id = expectIdentifier() in
@@ -477,15 +483,15 @@ let parse tokens =
 
         (*structs*)
         let typ, success = match lst with
-                | [L.STRUCT; L.ID id] ->
-                    begin match (Environment.struct_find_opt id env) with
-                        | None when not in_decl -> raise (ParserError ("Struct "^id^" is not declared."))
-                        | None -> Ast.Struct {contents={name=id;mems=[];size=0L;align=0L}}, true
-                        | Some (Environment.Struct (_, data), _) ->
-                            Ast.Struct data, true
-                        | Some _ -> failwith "Impossible."
-                    end
-                | lst -> Ast.Int, not (List.mem L.STRUCT lst)
+            | [L.STRUCT; L.ID id] ->
+                begin match (Environment.struct_find_opt id env) with
+                    | None when not in_decl -> raise (ParserError ("Struct "^id^" is not declared."))
+                    | None -> Ast.Struct {contents={name=id;mems=[];size=0L;align=0L}}, true
+                    | Some (Environment.Struct (_, data), _) ->
+                        Ast.Struct data, true
+                    | Some _ -> failwith "Impossible."
+                end
+            | lst -> Ast.Int, not (List.mem L.STRUCT lst)
         in
         if (not success) then(
             raise (ParserError "Can't combine struct with other type specifiers"))
@@ -494,32 +500,53 @@ let parse tokens =
 
         (*unions*)
         let typ, success = match lst with
-                | [L.UNION; L.ID id] ->
-                    begin match (Environment.union_find_opt id env) with
-                        | None when not in_decl -> raise (ParserError ("Union "^id^" is not declared."))
-                        | None -> Ast.Union {contents={name=id;mems=[];size=0L;align=0L}}, true
-                        | Some (Environment.Union (_, data), _) ->
-                            Ast.Union data, true
-                        | Some _ -> failwith "Impossible."
-                    end
-                | lst -> Ast.Int, not (List.mem L.UNION lst)
+            | [L.UNION; L.ID id] ->
+                begin match (Environment.union_find_opt id env) with
+                    | None when not in_decl -> raise (ParserError ("Union "^id^" is not declared."))
+                    | None -> Ast.Union {contents={name=id;mems=[];size=0L;align=0L}}, true
+                    | Some (Environment.Union (_, data), _) ->
+                        Ast.Union data, true
+                    | Some _ -> failwith "Impossible."
+                end
+            | lst -> Ast.Int, not (List.mem L.UNION lst)
         in
         if (not success) then(
             raise (ParserError "Can't combine union with other type specifiers"))
         else if typ <> Ast.Int then typ
         else
 
+        (*Type aliases*)
+        let typ, success = match lst with
+            | [L.ID id] ->
+                begin match (Environment.find_opt id env) with
+                    | Some (Environment.Type typ, _) ->
+                        Some typ, true
+                    | Some _
+                    | None -> failwith "Impossible."
+                end
+            (*We passed the Struct and Union checks, so any L.IDs are invalid after this point.*)
+            | lst -> None, Option.is_none (List.find_opt (function | L.ID _ -> true | _ -> false) lst)
+        in
+        if (not success) then(
+            raise (ParserError "Can't combine type aliases with other type specifiers"))
+        else if Option.is_some typ then Option.get typ
+        else
+
+        (*Void*)
         if lst = [L.VOID] then Ast.Void else
         if List.mem L.VOID lst then raise (ParserError "Can't combine 'void' with other type specifiers") else
 
+        (*Chars*)
         if lst = [L.CHAR] then Ast.Char else
         if lst = [L.SIGNED; L.CHAR] || lst = [L.CHAR; L.SIGNED] then Ast.SChar else
         if lst = [L.UNSIGNED; L.CHAR] || lst = [L.CHAR; L.UNSIGNED] then Ast.UChar else
         if List.mem L.CHAR lst then raise (ParserError "Can't combine 'char' with other type specifiers") else
 
+        (*Double*)
         if lst = [L.DOUBLE] then Ast.Double else
         if List.mem L.DOUBLE lst then raise (ParserError "Can't combine 'double' with other type specifiers") else
 
+        (*Ints*)
         let _ = List.fold_left (fun seen x -> (
             if List.mem x seen then raise (ParserError "Invalid type specifier.") else
             if x = L.SIGNED && List.mem L.UNSIGNED seen then raise (ParserError "Type specifier cannot be both signed and unsigned") else
@@ -546,6 +573,10 @@ let parse tokens =
                           if Option.is_some storage then raise (ParserError "Invalid storage class")
                           else iter typ (Some Ast.Static)
 
+            | L.TYPEDEF -> let _ = eatToken() in
+                          if Option.is_some storage then raise (ParserError "Invalid storage class")
+                          else iter typ (Some Ast.Typedef)
+
             | L.STRUCT -> let t = eatToken() in
                           let id = expectIdentifier() in
                           iter (t :: (L.ID id) :: typ) storage
@@ -554,7 +585,7 @@ let parse tokens =
                           let id = expectIdentifier() in
                           iter (t :: (L.ID id) :: typ) storage
 
-            | x when isTypeSpec x -> 
+            | x when isTypeSpec env x -> 
                 iter (eatToken() :: typ) storage
 
 
@@ -866,10 +897,11 @@ let parse tokens =
             let _ = eatToken() in
 
             let rec iter ?(first=false) seen = match nextToken() with
-                | x when isTypeSpec x ->
+                | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
                     let (id, typ, _, _) = try
                             ParserDeclarator.process_declarator tokens typ
+                                (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
                         with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
@@ -945,10 +977,11 @@ let parse tokens =
             let _ = eatToken() in
 
             let rec iter seen = match nextToken() with
-                | x when isTypeSpec x ->
+                | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
                     let (id, typ, _, _) = try
                             ParserDeclarator.process_declarator tokens typ
+                                (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
                         with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
@@ -1015,11 +1048,22 @@ let parse tokens =
         | _ ->
 
         let () = checkForUndeclaredStructs typ env lvl in
+
         let (id, typ, maybe_params, is_variadic) = try
-                ParserDeclarator.process_declarator tokens typ
+            ParserDeclarator.process_declarator tokens typ
+                    (isTypeSpec env)
                     (fun () -> parse_type_spec None env)
                     (fun () -> parse_expr env lvl)
             with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+
+        if storage = Some (Ast.Typedef) then
+            begin try
+                let () = expect L.SEMICOLON in
+                let env = Environment.type_add id typ env lvl in
+                (Ast.TypeDecl (id, typ), env)
+            with Environment.EnvironmentError e -> raise (ParserError e) end
+        else
+
         match typ with
             | Ast.FunType (param_types, ret_type) ->
                 if forInit then raise (ParserError "Cannot declare function in a for initilalization clause") else
@@ -1198,6 +1242,7 @@ let parse tokens =
                         | Environment.Func (id, paramTypes, retType, _, is_variadic) -> retType, (Ast.Var (id, Ast.Function (paramTypes, retType, is_variadic)))
                         | Environment.Struct _ -> failwith "Impossible struct in parse_primary"
                         | Environment.Union _ -> failwith "Impossible union in parse_primary"
+                        | Environment.Type _ -> failwith "Impossible type alias in parse_primary"
                     end
             end
             | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
@@ -1291,7 +1336,7 @@ let parse tokens =
         in iter (nextToken()) primary
 
     and parse_cast ?(arr_decay=true) env lvl = match nextToken() with
-        | L.LPAREN when isTypeSpec (nextNextToken()) ->
+        | L.LPAREN when isTypeSpec env (nextNextToken()) ->
             let _ = eatToken() in
             let typp = parse_type_spec None env in
             let typp = ParserDeclarator.process_abstract_declarator tokens typp (fun () -> parse_expr env lvl) in
@@ -1395,7 +1440,7 @@ let parse tokens =
 
         | L.SIZEOF ->
             let _ = eatToken() in
-            if isTypeSpec (nextNextToken()) then
+            if isTypeSpec env (nextNextToken()) then
                 let () = expect L.LPAREN in
                 let typ = parse_type_spec None env in
                 let typ = ParserDeclarator.process_abstract_declarator tokens typ (fun () -> parse_expr env lvl) in

@@ -8,7 +8,7 @@ type decl_type = Var of string * Ast.data_type
                | Func of fun_data
                | Struct of string * Ast.struct_data ref
                | Union of string * Ast.union_data ref
-               (*| Type (* for now it's just int *) *)
+               | Type of Ast.data_type
 
 type identifier_attrs = FunAttr of fun_data * bool(*is_global*)
                       | VarAttr of string * initial_value * Ast.data_type * bool(*is_global*)
@@ -32,6 +32,8 @@ let emptyGlobal : envGlobal = Env.empty
 type envSemantGoto = string Env.t
 let emptySemantGoto : envSemantGoto = Env.empty
 
+exception EnvironmentError of string
+
 let tag = ".tag."
 let struct_tag = tag
 let union_tag = tag
@@ -44,6 +46,20 @@ let struct_find_opt id env =
 let union_find_opt id env =
     let r = tag_find_opt id env in
     match r with Some (Union _, _) -> r | _ -> None
+
+let type_mem id env = match find_opt id env with
+    | Some (Type _, _) -> true
+    | _ -> false
+
+let isInScope identifier level (env:env) = match Env.find_opt identifier env with
+    | None -> false
+    | Some (_, lvl) -> level = lvl
+let structIsInScope identifier level (env:env) = match struct_find_opt identifier env with
+    | None -> false
+    | Some (_, lvl) -> level = lvl
+let unionIsInScope identifier level (env:env) = match union_find_opt identifier env with
+    | None -> false
+    | Some (_, lvl) -> level = lvl
 
 let add  = Env.add
 let struct_add id (data:Ast.struct_data) lvl env ~is_new =
@@ -59,21 +75,15 @@ let union_add id (data:Ast.union_data) lvl env ~is_new =
         | Some ((Union (_, data_ref)), _) -> let () = data_ref := data in env
         | _ -> failwith "Impossible???????"
 
+let type_add id typ env lvl =
+    if isInScope id lvl env then
+        raise (EnvironmentError (id ^ " is already in scope."))
+    else
+        add id (Type typ, lvl) env
+
 let fold = Env.fold
 
-let isInScope identifier level (env:env) = match Env.find_opt identifier env with
-    | None -> false
-    | Some (_, lvl) -> level = lvl
-let structIsInScope identifier level (env:env) = match struct_find_opt identifier env with
-    | None -> false
-    | Some (_, lvl) -> level = lvl
-let unionIsInScope identifier level (env:env) = match union_find_opt identifier env with
-    | None -> false
-    | Some (_, lvl) -> level = lvl
-
 let printSemantGoto = Env.iter (fun k v -> print_string (k ^ " -> " ^ v ^ "\n"))
-
-exception EnvironmentError of string
 
 (*HELL BELOW*)
 
@@ -151,6 +161,7 @@ let tryAddVariable (localEnv: env) (globalEnv: envGlobal) level storage_opt iden
                 | _ -> declareGlobalVar localEnv globalEnv level identifier typ true
             end
             | (Some Ast.Extern, Some init) -> defineGlobalVar localEnv globalEnv level identifier init typ true
+            | (Some Ast.Typedef, _) -> failwith "Impossible"
     else
         match storage_opt, init_opt with
             (* Most of the work is in the parser and the AST *)
@@ -183,6 +194,7 @@ let tryAddVariable (localEnv: env) (globalEnv: envGlobal) level storage_opt iden
                             | _ -> declareGlobalVar newLocal globalEnv level identifier typ true
                         end
                 end
+            | (Some Ast.Typedef, _) -> failwith "Impossible"
 
 let tryAddFunction (localEnv: env) (globalEnv: envGlobal) level storage identifier param_types ret_type body_opt is_variadic = 
 let thisIsDefined = Option.is_some body_opt in
@@ -208,6 +220,7 @@ let addFunction is_external =
             | Func _ -> () (*locally nothing to check*)
             | Struct _ -> failwith "Impossible."
             | Union _ -> failwith "Impossible."
+            | Type _ -> failwith "Impossible."
     end in
     match find_opt identifier globalEnv with
         | None -> let fn = (identifier, param_types, ret_type, thisIsDefined, is_variadic) in
@@ -235,6 +248,7 @@ let addFunction is_external =
                 | _ -> addFunction true
             end
             | (Ast.Static, _) -> addFunction false
+            | (Ast.Typedef, _) -> failwith "Impossible"
     else
         match storage, body_opt with
             | (Ast.Extern, None) -> begin match find_opt identifier globalEnv with
@@ -243,6 +257,7 @@ let addFunction is_external =
             end
             | (Ast.Extern, Some _) -> raise (EnvironmentError "Cannot define a function inside another function.")
             | (Ast.Static, _) -> raise (EnvironmentError "Cannot declare a static function inside another function.")
+            | (Ast.Typedef, _) -> failwith "Impossible"
 
 (*let globalEnvString globalEnv =*)
 (*    let initialStr = function*)

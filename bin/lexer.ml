@@ -37,6 +37,7 @@ type token =
     | DEFAULT
     | STATIC
     | EXTERN
+    | TYPEDEF
     | LPAREN
     | RPAREN
     | LBRACK
@@ -119,6 +120,7 @@ let string_of_token = function
     | DEFAULT -> "default"
     | STATIC -> "static"
     | EXTERN -> "extern"
+    | TYPEDEF -> "typedef"
     | LPAREN -> "("
     | RPAREN -> ")"
     | LBRACK -> "["
@@ -220,6 +222,7 @@ let token_regexes =
         | "default" -> DEFAULT
         | "static" -> STATIC
         | "extern" -> EXTERN
+        | "typedef" -> TYPEDEF
         | _ -> ID str))
 ;
     (* Double *)

@@ -906,6 +906,7 @@ let tackify ast globalEnv =
             | Ast.VarDecl _ -> parseTopLevel rest
             | Ast.StructDecl _ -> parseTopLevel rest
             | Ast.UnionDecl _ -> parseTopLevel rest
+            | Ast.TypeDecl _ -> parseTopLevel rest
         end
 
     in let parseStaticVarsAndNoticeUndefinedExternFunctions() =

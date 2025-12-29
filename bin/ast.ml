@@ -79,7 +79,7 @@ and stmt = Return of typed_expr option
          | Switch of typed_expr_sp * case list * stmt * identifier(*break*) * identifier(*default*)
          | Case of case | Default of string
 
-and storage_class = Static | Extern
+and storage_class = Static | Extern | Typedef
 
 and initialiser = SingleInit of typed_expr | CompoundInit of initialiser list | ZeroesInit of Int64.t
 
@@ -95,6 +95,7 @@ and decl = VarDecl of var_decl
          | FunDecl of fun_decl
          | StructDecl of struct_decl
          | UnionDecl of union_decl
+         | TypeDecl of identifier * data_type
 
 type toplevel = decl
 
@@ -210,6 +211,10 @@ let signed = function
     | Char | SChar | Int | Long -> true
     | UChar| UInt | ULong -> false
     | _ -> failwith "Cannot use with non-integral types."
+
+let isFunctionType = function
+    | FunType _ -> true
+    | _ -> false
 
 let isIntegral = function
     | Char | SChar | UChar | Int | UInt | Long | ULong -> true
@@ -402,6 +407,7 @@ let string_binary_op_sp = function
 let string_storage_specifier = function
     | Static -> "static "
     | Extern -> "extern "
+    | Typedef -> "typedef "
 
 let string_storage_specifier_opt = function
     | None -> ""
@@ -635,6 +641,9 @@ and print_decl tabs decl =
                 print_string ((string_data_type typ) ^ id)
             ) mems;
             print_string "}\n"
+
+        | TypeDecl (id, typ) ->
+            print_string ("<typedef "^id^">("^(string_data_type typ)^")\n");
 
 
 and print_block_item tabs b =
