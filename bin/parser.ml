@@ -40,6 +40,12 @@ let parse tokens =
         | (Ast.Array(t,_), _) -> (Ast.Ptr t, Ast.AddressOf t_expr)
         | _ -> t_expr
 
+    in let decay_fn t_expr = match t_expr with
+        | (fnType, Ast.Var (name, Ast.Function _)) ->
+            let new_expr = (fnType, Ast.Var (name, Ast.StaticVariable fnType)) in
+            (Ast.Ptr fnType, Ast.AddressOf new_expr)
+        | _ -> t_expr
+
     in let undecay_arr t_expr = match t_expr with
         | (Ast.Ptr _, Ast.AddressOf ((Ast.Array _, _) as arr)) -> arr
         | _ -> t_expr
@@ -73,6 +79,7 @@ let parse tokens =
         let op =
             if Ast.isPointer typ_var then
                 if not (Ast.isPtrToComplete typ_var) then raise (ParserError "Can't increment a ptr to incomplete type") else
+                if (Ast.isFunctionPtr typ_var) then raise (ParserError "Can't increment a function pointer.") else
                 Ast.PtrIncrement
             else if (Ast.isScalar typ_var) then
                 Ast.Increment
@@ -84,6 +91,7 @@ let parse tokens =
         let op =
             if Ast.isPointer typ_var then
                 if not (Ast.isPtrToComplete typ_var) then raise (ParserError "Can't decrement a ptr to incomplete type") else
+                if (Ast.isFunctionPtr typ_var) then raise (ParserError "Can't decrement a function pointer.") else
                 Ast.PtrDecrement
             else if (Ast.isScalar typ_var) then
                 Ast.Decrement
@@ -589,7 +597,7 @@ let parse tokens =
                           let id = expectIdentifier() in
                           iter (t :: (L.ID id) :: typ) storage
 
-            | L.ID id as x when isTypeSpec env x -> 
+            | L.ID _ as x when isTypeSpec env x -> 
                 (*Nasty C grammar. If a type alias is not a first type specifier, it's variable identifer*)
                 if not first then
                     (typ, storage)
@@ -857,7 +865,7 @@ let parse tokens =
             end
         | Ast.Ptr typ -> checkForUndeclaredStructs typ env lvl
         | Ast.Array (typ, _) -> checkForUndeclaredStructs typ env lvl
-        | Ast.FunType (_, typ) ->
+        | Ast.FunType (_, typ, _) ->
             (*I'm gonna assume parameters are checked, because that's what I did and I'm the only guy working here.*)
             checkForUndeclaredStructs typ env lvl
         | _ -> ()
@@ -910,7 +918,7 @@ let parse tokens =
             let rec iter ?(first=false) seen = match nextToken() with
                 | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
-                    let (id, typ, _, _) = try
+                    let (id, typ, _) = try
                             ParserDeclarator.process_declarator tokens typ
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
@@ -990,7 +998,7 @@ let parse tokens =
             let rec iter seen = match nextToken() with
                 | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
-                    let (id, typ, _, _) = try
+                    let (id, typ, _) = try
                             ParserDeclarator.process_declarator tokens typ
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
@@ -1060,7 +1068,7 @@ let parse tokens =
 
         let () = checkForUndeclaredStructs typ env lvl in
 
-        let (id, typ, maybe_params, is_variadic) = try
+        let (id, typ, maybe_params) = try
             ParserDeclarator.process_declarator tokens typ
                     (isTypeSpec env)
                     (fun () -> parse_type_spec None env)
@@ -1076,7 +1084,7 @@ let parse tokens =
         else
 
         match typ with
-            | Ast.FunType (param_types, ret_type) ->
+            | Ast.FunType (param_types, ret_type, is_variadic) ->
                 if forInit then raise (ParserError "Cannot declare function in a for initilalization clause") else
                 if Ast.isArray ret_type then raise (ParserError "Cannot return an array type.") else
                 parse_fun_decl (ret_type, (maybe_params, param_types), storage, id, is_variadic) env lvl
@@ -1124,7 +1132,7 @@ let parse tokens =
         | L.SWITCH ->
             let _ = eatToken() in
             let () = expect L.LPAREN in
-            let cond = parse_expr ~arr_decay:false env lvl in (*for some reason, arrays do not decay here !?!?!?*)
+            let cond = parse_expr ~arr_decay:false ~fn_decay:false env lvl in (*for some reason, arrays do not decay here !?!?!?*)
             if Ast.isStringLiteral cond then raise (ParserError "Cannot switch on string literals.") else
             if Ast.isArray (typ cond) then raise (ParserError "Cannot switch on arrays.") else
             if not (Ast.isScalar (typ cond)) then raise (ParserError "Cannot switch on a non-scalar expression.") else
@@ -1243,14 +1251,14 @@ let parse tokens =
                     | None -> raise (ParserError (id ^ " is not declared."))
                     | Some (decl, _) -> begin match decl with
                         | Environment.Var (realId, (Ast.Array _ as typ)) when arr_decay ->
-                            decay_arr (typ, (Ast.Var (realId, Ast.AutoVariable typ)))
+                            decay_arr(typ, (Ast.Var (realId, Ast.AutoVariable typ)))
                         | Environment.Var (realId, typ) ->
                             typ, (Ast.Var (realId, Ast.AutoVariable typ))
                         | Environment.StaticVar (realId, typ) when arr_decay ->
-                            decay_arr (typ, (Ast.Var (realId, Ast.StaticVariable typ)))
+                            decay_arr(typ, (Ast.Var (realId, Ast.StaticVariable typ)))
                         | Environment.StaticVar (realId, typ) ->
                             typ, (Ast.Var (realId, Ast.StaticVariable typ))
-                        | Environment.Func (id, paramTypes, retType, _, is_variadic) -> retType, (Ast.Var (id, Ast.Function (paramTypes, retType, is_variadic)))
+                        | Environment.Func (id, paramTypes, retType, _, is_variadic) -> Ast.FunType (paramTypes, retType, is_variadic), (Ast.Var (id, Ast.Function (paramTypes, retType, is_variadic)))
                         | Environment.Struct _ -> failwith "Impossible struct in parse_primary"
                         | Environment.Union _ -> failwith "Impossible union in parse_primary"
                         | Environment.Type _ -> failwith "Impossible type alias in parse_primary"
@@ -1258,7 +1266,7 @@ let parse tokens =
             end
             | _ -> raise (ParserError ("Expected primary, but got " ^ L.string_of_token t))
 
-    and parse_postfix ?(arr_decay=true) env lvl =
+    and parse_postfix ?(arr_decay=true) ?(fn_decay=true) env lvl =
         let primary = parse_primary env lvl in
         let rec iter peekToken left = match peekToken with
             | L.INCREMENT ->
@@ -1272,12 +1280,19 @@ let parse tokens =
                 let () = schedulePostfixDecr left in
                 iter (nextToken()) (typ left, Ast.Unary (Ast.Rvalue, left))
             | L.LPAREN ->
-                let id, paramsTypes, retType, is_variadic = begin match left with (_, Ast.Var (id, Ast.Function (paramsTypes, retType, is_variadic))) -> id, paramsTypes, retType, is_variadic
-                                                     | _ -> raise (ParserError "Cannot call a variable.") end in
+                let oper, paramsTypes, retType, is_variadic =
+                    begin match left with
+                        | (_, Ast.Var (id, Ast.Function (paramsTypes, retType, is_variadic))) ->
+                            Ast.Direct id, paramsTypes, retType, is_variadic
+                        | (Ast.FunType (ps, rt, vdc), Ast.Dereference inner_expr) ->
+                            Ast.Indirect inner_expr, ps, rt, vdc
+                        | (Ast.Ptr (Ast.FunType (ps, rt, vdc)), _) ->
+                            Ast.Indirect left, ps, rt, vdc
+                        | _ -> raise (ParserError "Cannot call a variable.") end in
                 if not (Ast.isComplete retType) && Ast.Void <> retType then raise (ParserError "Cannot call function with incomplete data type.") else
                 let _ = eatToken() in
                 let args = parse_args env lvl paramsTypes is_variadic in
-                iter (nextToken()) (retType, Ast.Call (id, args, is_variadic))
+                iter (nextToken()) (retType, Ast.Call (oper, args, is_variadic))
 
             | L.LBRACK ->
                 let _ = eatToken() in
@@ -1289,16 +1304,18 @@ let parse tokens =
 
                 if (Ast.isPointer typ1 && Ast.isIntegral typ2) then
                     if not (Ast.isPtrToComplete typ1) then raise (ParserError "Ptr type size must be complete.") else
+                    if (Ast.isFunctionPtr typ1) then raise (ParserError "Can't subscript a function pointer.") else
                     let deref_type = Ast.getPointerType typ1 in
                     let longed = explicit_convert_to right Ast.Long in
-                    iter (nextToken()) (decay_arr (deref_type, Ast.Subscript (left, longed)))
+                    iter (nextToken()) (decay_arr(deref_type, Ast.Subscript (left, longed)))
                 else if (Ast.isPointer typ2 && Ast.isIntegral typ1) then
                     if not (Ast.isPtrToComplete typ2) then raise (ParserError "Ptr type size must be complete.") else
+                    if (Ast.isFunctionPtr typ2) then raise (ParserError "Can't subscript a function pointer.") else
                     let deref_type = Ast.getPointerType typ2 in
                     let longed = explicit_convert_to left Ast.Long in
-                    iter (nextToken()) (decay_arr (deref_type, Ast.Subscript (right, longed)))
+                    iter (nextToken()) (decay_arr(deref_type, Ast.Subscript (right, longed)))
                 else
-                    raise (ParserError "Cannot use subscript operator with nothing other than a pointer and an integral expression.")
+                    raise (ParserError "Cannot use subscript operator with anything other than a pointer and an integral expression.")
 
             | L.DOT ->
                 let _ = eatToken() in
@@ -1307,13 +1324,13 @@ let parse tokens =
                     | Ast.Struct {contents={name;mems;_}} ->
                         begin match List.find_opt (fun (id,_,_) -> id = right) mems with
                             | Some (id,typ,off) ->
-                                iter (nextToken()) (decay_arr (typ, Ast.Dot (left, id, off)))
+                                iter (nextToken()) (decay_arr(typ, Ast.Dot (left, id, off)))
                             | None -> raise (ParserError ("Struct "^name^" doesn't have field \""^right^"\"."))
                         end
                     | Ast.Union {contents={name;mems;_}} ->
                         begin match List.find_opt (fun (id,_) -> id = right) mems with
                             | Some (id,typ) ->
-                                iter (nextToken()) (decay_arr (typ, Ast.Dot (left, id, 0L)))
+                                iter (nextToken()) (decay_arr(typ, Ast.Dot (left, id, 0L)))
                             | None -> raise (ParserError ("Union "^name^" doesn't have field \""^right^"\"."))
                         end
                     | _ -> raise (ParserError "Lefthand side of dot operator is not a struct or union.")
@@ -1326,52 +1343,53 @@ let parse tokens =
                     | Ast.Ptr (Ast.Struct {contents={name;mems;_}}) ->
                         begin match List.find_opt (fun (id,_,_) -> id = right) mems with
                             | Some (id,typ,off) ->
-                                iter (nextToken()) (decay_arr (typ, Ast.Arrow (left, id, off)))
+                                iter (nextToken()) (decay_arr(typ, Ast.Arrow (left, id, off)))
                             | None -> raise (ParserError ("Struct "^name^" doesn't have field \""^right^"\"."))
                         end
                     | Ast.Ptr (Ast.Union {contents={name;mems;_}}) ->
                         begin match List.find_opt (fun (id,_) -> id = right) mems with
                             | Some (id,typ) ->
-                                iter (nextToken()) (decay_arr (typ, Ast.Arrow (left, id, 0L)))
+                                iter (nextToken()) (decay_arr(typ, Ast.Arrow (left, id, 0L)))
                             | None -> raise (ParserError ("Union "^name^" doesn't have field \""^right^"\"."))
                         end
                     | _ -> raise (ParserError "Lefthand side of dot operator is not a struct or union pointer.")
                 end
 
-            | _ -> (*functions cannot be an expression past this point*)
-                begin match left with
-                    | (_, Ast.Var (_, Ast.Function _)) -> raise (ParserError "Cannot use function as a variable.")
-                    | _ -> if arr_decay then left else undecay_arr left
-                end
+            | _ ->
+                let left = if fn_decay then decay_fn left else left in
+                if arr_decay then left else undecay_arr left
 
         in iter (nextToken()) primary
 
-    and parse_cast ?(arr_decay=true) env lvl = match nextToken() with
+    and parse_cast ?(arr_decay=true) ?(fn_decay=true) env lvl = match nextToken() with
         | L.LPAREN when isTypeSpec env (nextNextToken()) ->
             let _ = eatToken() in
             let typp = parse_type_spec None env in
-            let typp = ParserDeclarator.process_abstract_declarator tokens typp (fun () -> parse_expr env lvl) in
+            let typp = ParserDeclarator.process_abstract_declarator tokens typp
+                (isTypeSpec env)
+                (fun () -> parse_type_spec None env)
+                (fun () -> parse_expr env lvl) in
             let () = expect L.RPAREN in
             let src = parse_cast env lvl in
 
             if Ast.Void = typp then
-                if not (Ast.isComplete (typ src)) && Ast.Void <> (typ src)
-                    then raise (ParserError "Cannot cast an incomplete type to void.") else
-
-                explicit_convert_to src Ast.Void
+                if not (Ast.isComplete (typ src)) && Ast.Void <> (typ src) then
+                    raise (ParserError "Cannot cast an incomplete type to void.")
+                else
+                    explicit_convert_to src Ast.Void
             else if not (Ast.isScalar typp) then
-                raise (ParserError "Can only cast to scalar type of void")
+                raise (ParserError "Can only cast to scalar types.")
             else if not (Ast.isScalar (typ src)) then
                 raise (ParserError "Can't cast a non-scalar expression to scalar type")
             else
                 explicit_convert_to src typp
 
-        | _ -> try parse_unary ~arr_decay:arr_decay env lvl
+        | _ -> try parse_unary ~arr_decay:arr_decay ~fn_decay:fn_decay env lvl
                with ParserError e -> raise (ParserError ("Expected unary\n"^e))
 
 
 
-    and parse_unary ?(arr_decay=true) env lvl = match nextToken() with
+    and parse_unary ?(arr_decay=true) ?(fn_decay=true) env lvl = match nextToken() with
         | L.PLUS -> let _ = eatToken() in
                     let typed_expr = parse_cast env lvl in
                     let typed_expr = if Ast.isChar (typ typed_expr) then explicit_convert_to typed_expr Ast.Int else typed_expr in
@@ -1402,18 +1420,20 @@ let parse tokens =
                         else if (Ast.isPointer (typ typed_expr)) then
                             if not (Ast.isPtrToComplete (typ typed_expr)) then
                                 raise (ParserError "Can't dereference a pointer to an incomplete type.")
-                            else decay_arr (Ast.getPointerType (typ typed_expr), Ast.Dereference typed_expr)
+                            else decay_arr(Ast.getPointerType (typ typed_expr), Ast.Dereference typed_expr)
                         else
                             raise (ParserError "Cannot dereference a non-pointer.")
         | L.AMPERSAND -> let _ = eatToken() in
-                        let typed_expr = parse_cast ~arr_decay:false env lvl in
+                        let typed_expr = parse_cast ~arr_decay:false ~fn_decay:false env lvl in
                         begin match typed_expr with
                             (*| (_, Ast.Dereference t_expr) ->*)
                             (*    (typ t_expr, Ast.Unary (Ast.Rvalue, t_expr))*)
                             | (_, Ast.Subscript (ptr, index)) ->
                                 (typ ptr, Ast.Binary (Ast.PtrAdd, ptr, index))
                             | (typ, _) ->
-                                if (isLvalue ~imAddressOfOperator:true typed_expr) then
+                                if Ast.isFunctionType typ then
+                                        decay_fn typed_expr
+                                else if (isLvalue ~imAddressOfOperator:true typed_expr) then
                                     if Ast.isStringLiteral typed_expr then
                                         let str = (match typed_expr with (_, Ast.String str) -> str | _ -> failwith "Impossible.") in
                                         (Ast.Ptr (Ast.Array (Ast.Char, Int64.of_int (String.length str))), snd typed_expr)
@@ -1433,6 +1453,7 @@ let parse tokens =
             let typ_right = typ right in
             if Ast.isPointer typ_right then
                 if not (Ast.isPtrToComplete typ_right) then raise (ParserError "Can't increment a ptr to incomplete type") else
+                if (Ast.isFunctionPtr typ_right) then raise (ParserError "Can't increment a function pointer.") else
                 (typ_right, Ast.Unary (Ast.PtrIncrement, right))
             else
                 if not (Ast.isScalar typ_right) then raise (ParserError "Can't increment a non-scalar expression") else
@@ -1444,6 +1465,7 @@ let parse tokens =
             let typ_right = typ right in
             if Ast.isPointer typ_right then
                 if not (Ast.isPtrToComplete typ_right) then raise (ParserError "Can't decrement a ptr to incomplete type") else
+                if (Ast.isFunctionPtr typ_right) then raise (ParserError "Can't decrement a function pointer.") else
                 (typ_right, Ast.Unary (Ast.PtrDecrement, right))
             else
                 if not (Ast.isScalar typ_right) then raise (ParserError "Can't decrement a non-scalar expression") else
@@ -1454,22 +1476,27 @@ let parse tokens =
             if isTypeSpec env (nextNextToken()) then
                 let () = expect L.LPAREN in
                 let typ = parse_type_spec None env in
-                let typ = ParserDeclarator.process_abstract_declarator tokens typ (fun () -> parse_expr env lvl) in
+                let typ = ParserDeclarator.process_abstract_declarator tokens typ
+                    (isTypeSpec env)
+                    (fun () -> parse_type_spec None env)
+                    (fun () -> parse_expr env lvl) in
                 if not (Ast.isComplete typ) then raise (ParserError "Can't get the size of an incomplete type.") else
+                if (Ast.isFunctionType typ) then raise (ParserError "Can't get the size of a function.") else
                 let () = expect L.RPAREN in
                 (Ast.ULong, Ast.SizeOfT typ)
             else
-                let expr = parse_unary ~arr_decay:false env lvl in
+                let expr = parse_unary ~arr_decay:false ~fn_decay:false env lvl in
                 let _ = flushPostfix() in (*any postfix incr and decrs should be ignored as if they were never evaluated*)
                 if not (Ast.isComplete (typ expr)) then raise (ParserError "Can't get the size of an incomplete type.") else
+                if (Ast.isFunctionType (typ expr)) then raise (ParserError "Can't get the size of a function.") else
                 (Ast.ULong, Ast.SizeOf expr)
 
 
-        | _ -> try parse_postfix ~arr_decay:arr_decay env lvl
+        | _ -> try parse_postfix ~arr_decay:arr_decay ~fn_decay:fn_decay env lvl
                with ParserError e -> raise (ParserError ("Expected unary\n"^e))
 
-    and parse_expr ?(arr_decay=true) ?(min_prec=0) env lvl : (Ast.typed_expr) =
-        let left = parse_cast ~arr_decay:arr_decay env lvl in
+    and parse_expr ?(arr_decay=true) ?(fn_decay=true) ?(min_prec=0) env lvl : (Ast.typed_expr) =
+        let left = parse_cast ~arr_decay:arr_decay ~fn_decay:fn_decay env lvl in
         let peek = nextToken() in
         let rec iter peekToken left = let p = prec(peekToken) in
             if p >= min_prec then (
@@ -1482,11 +1509,13 @@ let parse tokens =
                     let right_type = typ right in
 
                     if not (Ast.isComplete left_type) then raise (ParserError "Cannot assign to incomplete type variable.") else
+                    if (Ast.isFunctionType left_type) then raise (ParserError "Cannot assign to function type variable.") else
 
                     if (op = Ast.Add && Ast.isPointer left_type && Ast.isIntegral right_type) ||
                        (op = Ast.Sub && Ast.isPointer left_type && Ast.isIntegral right_type)
                     then
                         if not (Ast.isPtrToComplete left_type) then raise (ParserError "Ptr type size must be complete.") else
+                        if (Ast.isFunctionPtr left_type) then raise (ParserError "Cannot do arithmetic on function pointers.") else
                         let op = if op = Ast.Add then Ast.PtrAdd else Ast.PtrSub in
                         let longed = explicit_convert_to right Ast.Long in
                         iter (nextToken()) (left_type, Ast.BinaryAssign (op, left, longed, None))
@@ -1605,6 +1634,7 @@ let parse tokens =
                             then left_type, left, explicit_convert_to right Ast.Long
                             else right_type, right, explicit_convert_to left Ast.Long in
                         if not (Ast.isPtrToComplete typ) then raise (ParserError "Ptr type size must be complete.") else
+                        if (Ast.isFunctionPtr left_type) then raise (ParserError "Cannot do arithmetic on function pointers.") else
                         let op = if op = Ast.Add then Ast.PtrAdd else Ast.PtrSub in
                         iter (nextToken()) (typ, Ast.Binary (op, ptr, longed))
 
@@ -1615,12 +1645,14 @@ let parse tokens =
                         raise (ParserError "Cannot add two pointers together.")
                     else if (op = Ast.Sub && Ast.isPointer left_type && Ast.isPointer right_type && left_type = right_type) then
                         if not (Ast.isPtrToComplete left_type) then raise (ParserError "Ptr type size must be complete.") else
+                        if (Ast.isFunctionPtr left_type) then raise (ParserError "Cannot subtract function pointers.") else
                         iter (nextToken()) (Ast.Long, Ast.Binary (Ast.PtrPtrSub left_type, left, right))
                     else
 
                     (*simple and quick bugfix. Pretty sure it's not 100% correct, though.*)
-                    let can_implicit_cast_nullptr = match op with Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> false | _ -> true in
-                    let can_to_void_ptr = match op with Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> false | _ -> true in
+                    let is_ordering_compare = match op with Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true | _ -> false in
+                    let can_implicit_cast_nullptr = not is_ordering_compare in
+                    let can_to_void_ptr = not is_ordering_compare in
 
                     let cmn_type =
                         if Ast.isStruct (typ left) && Ast.isStruct (typ right) then
@@ -1635,6 +1667,7 @@ let parse tokens =
                             raise (ParserError "Invalid operands for binary expression") in
                     if (Ast.isFloatingPoint cmn_type && isNotFloatable op) then raise (ParserError "Can't take modulo or logic operator of a floating point expression") else
                     if (Ast.isPointer cmn_type && isNotPointerable op) then raise (ParserError "Can't multiply/divide/modulo/logical operators on pointers.") else
+                    if (Ast.isFunctionPtr cmn_type && is_ordering_compare) then raise (ParserError "Can't compare function pointes using <, <=, > or >=") else
                     let new_left = explicit_convert_to left cmn_type in
                     let new_right = explicit_convert_to right cmn_type in
                     let return = if isBoolean p then

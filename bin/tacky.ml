@@ -15,6 +15,7 @@ type typ = Int8 of bool | Int32 of bool | Int64 of bool (*is_signed*)
          | Ptr of typ
          | ArrObj of typ * Int64.t * Int64.t (*size * align*)
          | Struct of Int64.t * Int64.t (*size * align*) * struct_class
+         | Function of identifier
          | Void
 
 type constant = I of Z.t * typ
@@ -49,7 +50,7 @@ type instruction = Return of operand option
                  | JumpIfZero of operand * identifier
                  | JumpIfNotZero of operand * identifier
                  | Label of identifier
-                 | Call of identifier * operand list * operand option * bool(*is_variadic*)
+                 | Call of operand * operand list * operand option * bool(*is_variadic*)
 
 type toplevel = Function of string * bool(*global*) * (identifier * typ) list * typ * instruction list
               | StaticVariable of string * bool(*global*) * constant list * Int64.t(*size bytes*) * Int64.t(*alignment*)
@@ -66,6 +67,7 @@ let type_signed = function
     | ArrObj _ -> failwith "Make the code so that type_signed is not used with array objects"
     | Void -> failwith "Make the code so that type_signed is not used with voids"
     | Struct _ -> failwith "Make the code so that type_signed is not used with structs"
+    | Function _ -> failwith "Make the code so that type_signed is not used with functions"
 
 let rec to_ast_type = function
     | Int8 true -> Ast.SChar
@@ -79,6 +81,7 @@ let rec to_ast_type = function
     | ArrObj (x, s, _) -> Ast.Array (to_ast_type x, s)
     | Void -> Ast.Void
     | Struct _ -> failwith "Cannot convert tacky struct back to Ast struct"
+    | Function _ -> failwith "Cannot convert tacky function back to Ast function"
 
 let rec typ_size = function
     | Int8 _ -> 1L
@@ -89,6 +92,7 @@ let rec typ_size = function
     | ArrObj (typ, size, _) -> Int64.mul (typ_size typ) size
     | Struct (size, _, _) -> size
     | Void -> failwith "Nuh-uh"
+    | Function _ -> failwith "Nuh-uh"
 
 (*let type_float = function*)
 (*    | Float64 -> true*)
@@ -103,6 +107,7 @@ let number_zero typ = match typ with
     | ArrObj _ -> failwith "Cannot number_zero an ArrObj"
     | Void -> failwith "Cannot number_zero a void"
     | Struct _ -> failwith "Cannot number_zero a struct"
+    | Function _ -> failwith "Cannot number_zero a function"
 
 let number_zero_operand typ = match typ with
     | Int8 _ -> Constant (I (Z.zero, typ))
@@ -111,6 +116,7 @@ let number_zero_operand typ = match typ with
     | Float64 -> StaticVar (Label.getLabelDouble Float.zero, Float64)
     | Ptr _ -> Constant (I (Z.zero, Int64 false))
     | ArrObj _ -> failwith "Cannot number_zero_operand an ArrObj"
+    | Function _ -> failwith "Cannot number_zero_operand a function"
     | Void -> Constant (I (Z.zero, typ))
     | Struct _ -> Constant (I (Z.zero, typ))
 
@@ -160,6 +166,7 @@ let rec typ_str = function
     | ArrObj (x, s, _) -> (typ_str x)^"_arr["^(Int64.to_string s)^"]"
     | Void -> "void"
     | Struct _ -> "struct"
+    | Function name -> "function("^name^")"
 
 let struct_class_str = function
     | SMEM -> "MEMORY"
@@ -209,8 +216,10 @@ let instruction_str inst =
         | JumpIfZero (s, lbl) -> "JumpIfZero("^(operand_str s)^", "^lbl^")\n"
         | JumpIfNotZero (s, lbl) -> "JumpIfNotZero("^(operand_str s)^", "^lbl^")\n"
         | Label lbl -> "Label("^lbl^")\n"
-        | Call (name, params, Some dst, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
-        | Call (name, params, None, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
+        | Call (Constant (S name), params, Some dst, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
+        | Call (callee, params, Some dst, _) -> "Call<"^(operand_str callee)^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> " ^ (operand_str dst) ^ "\n"
+        | Call (Constant (S name), params, None, _) -> "Call<"^name^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
+        | Call (callee, params, None, _) -> "Call<"^(operand_str callee)^">("^(List.map (fun x -> operand_str x) params |> (String.concat ", "))^") -> void\n"
 
 let toplevel_str tl =
     match tl with

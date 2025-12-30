@@ -125,6 +125,7 @@ let parseType typ =
         | Tac.ArrObj (_, s, a) -> Asmt.ByteArray (s, a), false
         | Tac.Struct (s, a, _) -> Asmt.ByteArray (s, a), false
         | Tac.Void -> Asmt.LongWord, true
+        | Tac.Function _ -> Asmt.LongWord, true
 
 let classify_parameters typs return_in_memory =
     let getSizeType size = if size >= 8L then Asmt.QuadWord else if size = 4L then Asmt.LongWord else if size = 2L then Asmt.Word else if size = 1L then Asmt.Byte else Asmt.ByteArray (size, 1L) in
@@ -240,6 +241,7 @@ let classify_parameters typs return_in_memory =
 
         | Tac.ArrObj _ :: _ -> failwith "Function parameters cannot be ArrObjs"
         | Tac.Void :: _ -> failwith "Function parameters cannot be voids"
+        | Tac.Function _ :: _ -> failwith "Function parameters cannot be functions"
 
     in iter typs (if return_in_memory then 2 else 1) 1 1
 
@@ -435,6 +437,7 @@ let classify_return oper =
                 [], [typ1, oper1; typ2, oper2], false
         end
         | Tac.ArrObj _ -> failwith "Function return cannot be ArrayObject expression"
+        | Tac.Function _ -> failwith "Function return cannot be functions"
         | Tac.Void -> [], [], false
 
 let rec parseInstruction inst =
@@ -747,7 +750,7 @@ let rec parseInstruction inst =
 
         | Tac.Label lbl ->
             [Asmt.Label lbl]
-        | Tac.Call (name, params, dst, is_variadic) ->
+        | Tac.Call (callee, params, dst, is_variadic) ->
             let int_dsts, xmm_dsts, return_in_memory = (match dst with
                 | Some dst -> classify_return dst
                 | None -> [], [], false
@@ -804,6 +807,11 @@ let rec parseInstruction inst =
                 (List.rev inStack) |> List.flatten in
             let stackInstrs = if extraPadding then (Asmt.AllocateStack 8L) :: stackInstrs else stackInstrs in
 
+            let callInstr = begin match callee with
+                | Tac.Constant (S name) -> Asmt.Call name
+                | _ -> let (_, callee) = parseOperand callee in Asmt.CallStar callee
+            end in
+
             (if is_variadic then
                 let xmms = List.fold_left (fun acc ((_, oper), _) ->
                 match oper with Asmt.Reg xmm when Asmt.isXMM xmm -> acc+1 | _ -> acc) 0 inReg
@@ -818,12 +826,12 @@ let rec parseInstruction inst =
                     let (_, dst) = parseOperand dst in
                     (Asmt.Lea (dst, Asmt.Reg Asmt.RDI)) ::
                     regInstrs @ stackInstrs @
-                    [Asmt.Call (name);
+                    [callInstr;
                      Asmt.DeallocateStack deallocSize]
 
                 else
                     regInstrs @ stackInstrs @
-                    [Asmt.Call (name);
+                    [callInstr;
                     Asmt.DeallocateStack deallocSize] @
                     (List.mapi
                         (fun i (typ, dst) ->
@@ -838,7 +846,7 @@ let rec parseInstruction inst =
 
             | None ->
                 regInstrs @ stackInstrs @
-                [Asmt.Call (name);
+                [callInstr;
                  Asmt.DeallocateStack deallocSize]
 
 let parseProgram tacky =
@@ -970,6 +978,7 @@ let replacePseudos (name, instructions, return_in_memory, is_global) =
         | Asmt.Cvtsi2sx ((typ_s, s), (typ_d, d)) -> (f s typ_s acc) |> (f d typ_d)
         | Asmt.Cvttsx2si ((typ_s, s), (typ_d, d)) -> (f s typ_s acc) |> (f d typ_d)
         | Asmt.Cmov (typ, _, s, d) -> (f s typ acc) |> (f d typ)
+        | Asmt.CallStar s -> (f s QuadWord acc)
 
         | Asmt.DeclCompound (id, align, count) ->
             let (o16, o8, o4, o2, o1) = acc in
@@ -1044,6 +1053,7 @@ let replacePseudos (name, instructions, return_in_memory, is_global) =
         | Asmt.Div (typ, s) -> Asmt.Div (typ, f s typ)
         | Asmt.SetCC (x1, s) -> Asmt.SetCC (x1, f s Asmt.Byte)
         | Asmt.Cmov (typ, x1, s, d) -> Asmt.Cmov (typ, x1, f s typ, f d typ)
+        | Asmt.CallStar s -> Asmt.CallStar (f s QuadWord)
 
         | Asmt.DeclCompound (id, align, count) ->
             let off = match align with

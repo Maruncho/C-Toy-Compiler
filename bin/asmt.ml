@@ -58,6 +58,7 @@ type instruction = Mov of assembly_type * operand * operand
                  | DeallocateStack of Int64.t
                  | Push of assembly_type * operand
                  | Call of identifier
+                 | CallStar of operand
                  | Ret
                  | Nop of bool (*can_cleanup*)
 
@@ -233,7 +234,7 @@ let operand_str asm_type oper externalNames =
         | Pseudo id -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id
         | PseudoMem (id, off) -> if not !debug then failwith "PseudoRegister in prod" else "%" ^ id ^ "+" ^ (Int64.to_string off)
         | Data (id, scale_opt) ->
-            (if Environment.setMem id externalNames then id(*^"@PLT"*) else id) ^ 
+            (if Environment.setMem id externalNames then id(*^"@PLT"*) else id) ^
             (if Option.is_none scale_opt then "" else ("+" ^ (Int64.to_string (Option.get scale_opt))))^
             "(%rip)"
         | Memory (reg, num, index_opt, scale_opt) ->
@@ -282,6 +283,7 @@ let instruction_str inst externalNames =
         | DeallocateStack bytes -> "addq\t$" ^ (Int64.to_string bytes) ^ ", %rsp"
         | Push (typ, s) -> "push"^(p typ)^"\t" ^ (operand_str QuadWord s en)
         | Call lbl -> "call\t" ^ (if Environment.setMem lbl externalNames then lbl^"@PLT" else lbl)
+        | CallStar s -> "call\t*" ^ (operand_str QuadWord s en)
         | Ret -> "movq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
 
         | Nop _ -> "nop"

@@ -5,7 +5,7 @@ type data_type = Char | SChar | UChar | Int | Long | UInt | ULong | Double
                | Ptr of data_type
                | Array of data_type * Int64.t
                | Void
-               | FunType of data_type list * data_type (*used in declaration parsing*)
+               | FunType of data_type list * data_type * bool(*is_variadic*)
                | Struct of struct_data ref
                | Union of union_data ref
 
@@ -28,6 +28,7 @@ type binary_op = Add | Sub | Mul | Div | Mod | And | Or | Xor | Lshift | Rshift 
 
 type binary_op_sp = LogAnd | LogOr | Comma
 
+
 type typed_expr = data_type * expr
 and expr = Literal of lit
          | String of string
@@ -42,7 +43,7 @@ and expr = Literal of lit
          | BinaryAssign of binary_op * typed_expr * typed_expr * (data_type option) (*cast to rhs type if necessary*)
          | Assignment of typed_expr * typed_expr
          | Ternary of typed_expr_sp * typed_expr * typed_expr
-         | Call of identifier * typed_expr list * bool(*is_variadic*)
+         | Call of callOperand * typed_expr list * bool(*is_variadic*)
          | Dot of typed_expr * identifier * Int64.t
          | Arrow of typed_expr * identifier * Int64.t
          | SizeOf of typed_expr
@@ -63,6 +64,8 @@ and block = block_item list
 and for_init = InitDecl of var_decl_sp | InitExpr of typed_expr_sp
 
 and case = lit * identifier (*case <expr>: -> <label> *)
+
+and callOperand = Direct of identifier | Indirect of typed_expr
 
 and stmt = Return of typed_expr option
          | Expression of typed_expr
@@ -105,9 +108,10 @@ type program = Program of toplevel list
 let rec compare_types t1 t2 = match t1, t2 with
     | Ptr t1, Ptr t2 -> compare_types t1 t2
     | Array (t1, s1), Array (t2, s2) -> s1 = s2 && compare_types t1 t2
-    | FunType (ps1, r1), FunType (ps2, r2) ->
+    | FunType (ps1, r1, v1), FunType (ps2, r2, v2) ->
         List.length ps1 = List.length ps2 &&
         not (List.exists (fun (p1, p2) -> not (compare_types p1 p2)) (List.combine ps1 ps2)) &&
+        v1 = v2 &&
         compare_types r1 r2
     | Struct s1, Struct s2 -> s1 == s2
     | Union s1, Union s2 -> s1 == s2
@@ -221,7 +225,8 @@ let isIntegral = function
     | Double -> false
     | Ptr _ -> false
     | Array _ -> false
-    | FunType _ -> failwith "Don't use isIntegral() with func"
+    | FunType _ -> false
+    (*| FunType _ -> failwith "Don't use isIntegral() with func"*)
     | Void -> false
     | Struct _ -> false
     | Union _ -> false
@@ -258,13 +263,15 @@ let isScalar = function
     | Void -> false
     | Struct _ -> false
     | Union _ -> false
-    | FunType _ -> failwith "Don't use isScalar() with func"
+    | FunType _ -> false
+    (*| FunType _ -> failwith "Don't use isScalar() with func"*)
 
 let isPointer = function
     | Ptr _ -> true
     | Array _ -> false (*Sadly, not quite at the parsing-typechecking stage*)
     | Char | SChar | UChar | Int | UInt | Long | ULong | Double -> false
-    | FunType _ -> failwith "Don't use isPointer() with func"
+    | FunType _ -> false
+    (*| FunType _ -> failwith "Don't use isPointer() with func"*)
     | Void -> false
     | Struct _ -> false
     | Union _ -> false
@@ -319,11 +326,16 @@ let rec isComplete = function
     | Array (x, _) -> isComplete x
     | Struct data -> !data.size > 0L
     | Union data -> !data.size > 0L
-    | FunType _ -> failwith "Don't use isComplete() with func"
+    | FunType _ -> true
+    (*| FunType _ -> failwith "Don't use isComplete() with func"*)
 
 let isPtrToComplete = function
     | Ptr x -> isComplete x
     | _ -> failwith "Don't use isPtrToComplete() with non-pointer"
+
+let isFunctionPtr = function
+    | Ptr (FunType _) -> true
+    | _ -> false
 
 let isCharArray = function
     | Array (Char, _)
@@ -425,7 +437,7 @@ let rec string_data_type = function
     | Ptr r -> (string_data_type r) ^ "*"
     | Array (r, s) -> (string_data_type r) ^ "[" ^ (Int64.to_string s) ^ "]"
     | Void -> "void"
-    | FunType (ps, r) -> (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (string_data_type r)
+    | FunType (ps, r, v) -> "(" ^ (List.fold_left (fun acc p -> acc ^ (string_data_type p) ^ " -> ") "" ps) ^ (if v then "... -> " else "") ^ (string_data_type r) ^ ")"
     | Struct data -> "struct "^(!data.name)
     | Union data -> "union "^(!data.name)
 
@@ -500,8 +512,10 @@ let rec print_expr tabs expr =
             print_typed_expr (tabs+1) el;
             print_string (")")
 
-        | Call (name, args, _) ->
-            print_string ("Call("^name^",\n");
+        | Call (op, args, _) ->
+            print_string "Call(";
+            (match op with Direct name -> print_string (name^",\n")
+                         | Indirect expr -> print_string "\n"; print_typed_expr (tabs+1) expr); print_string ",\n";
             List.iter (fun x -> print_typed_expr (tabs+1) x; print_string "\n") args;
             print_string (")")
 

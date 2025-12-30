@@ -225,7 +225,7 @@ let tackify ast globalEnv =
         | Ast.UInt64 num -> Tac.I (Z.of_int64 num, Tac.Int64 false)
         | Ast.Float64 num -> Tac.D num
 
-    and parseType ?(in_struct=false) = function
+    and parseType ?(in_struct=false) ?(fn_name="") = function
         | Ast.Ptr (Ast.Struct {contents = {size;align;_}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
         | Ast.Ptr (Ast.Union {contents = {size;align;_}}) when in_struct -> Tac.Ptr (Tac.Struct (size, align, Tac.SMEM))
 
@@ -240,7 +240,7 @@ let tackify ast globalEnv =
         | Ast.Ptr x -> Tac.Ptr (parseType ~in_struct:in_struct x)
         | Ast.Array (t, s) -> Tac.ArrObj (parseType ~in_struct:in_struct t, s, Ast.alignment ~in_struct:in_struct t) (*failwith "DEBUG: SEE IF parseTYPE IS CALLED WITH ARRAY."*)
         | Ast.Void -> Tac.Void
-        | Ast.FunType _ -> failwith "parseType should not handle funtype"
+        | Ast.FunType _ -> Tac.Function fn_name
 
         | Ast.Struct {contents = {size;mems;align;_}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ,off) -> typ, off) |> parseStructClass size)
         | Ast.Union {contents = {size;mems;align;_}} -> Tac.Struct (size, align, mems |> List.map (fun (_,typ) -> typ, 0L) |> parseStructClass size)
@@ -285,6 +285,7 @@ let tackify ast globalEnv =
 
                         | Tac.Void
                         | Tac.Struct _
+                        | Tac.Function _
                         | Tac.ArrObj _ -> failwith "Impossible."
                     end
                     in iter first8 (Some curr) tail
@@ -313,6 +314,7 @@ let tackify ast globalEnv =
             | Tac.ArrObj _ -> failwith "Cannot call flipIsSigned with arrObj"
             | Tac.Void -> failwith "Cannot call flisIsSigned with void"
             | Tac.Struct _ -> failwith "Cannot call flisIsSigned with struct"
+            | Tac.Function _ -> failwith "Cannot call flisIsSigned with function"
         in function
             | Tac.Constant Tac.I (n, t) -> Tac.Constant (Tac.I (n, flipType t))
             | Tac.Var (n, t) -> Tac.Var (n, flipType t)
@@ -428,7 +430,7 @@ let tackify ast globalEnv =
         match expr with
             | _, Ast.Literal lit -> PlainOperand (Tac.Constant (parseLiteral lit))
             | typ, Ast.Var (id, Ast.AutoVariable _) -> PlainOperand (Tac.Var (id, parseType typ))
-            | typ, Ast.Var (id, Ast.StaticVariable _) -> PlainOperand (Tac.StaticVar (id, parseType typ))
+            | typ, Ast.Var (id, Ast.StaticVariable _) -> PlainOperand (Tac.StaticVar (id, parseType ~fn_name:id typ))
             | _, Ast.Var (_, Ast.Function _) -> failwith "No support for function variables"
 
             | char_ptr, Ast.String str ->
@@ -668,14 +670,18 @@ let tackify ast globalEnv =
                 let () = (Tac.Label end_lbl) #: instrs in
                 PlainOperand result
 
-            | typ, Ast.Call (name, args, is_variadic) ->
+            | typ, Ast.Call (callee, args, is_variadic) ->
+                let callee = begin match callee with
+                    | Ast.Direct name -> Tac.Constant (Tac.S name)
+                    | Ast.Indirect t_expr -> parseExpr_lval_convert t_expr
+                end in
                 let args = List.map (fun arg -> parseExpr_lval_convert arg) args in
                 if typ = Ast.Void then
-                    let () = (Tac.Call (name, args, None, is_variadic)) #: instrs in
+                    let () = (Tac.Call (callee, args, None, is_variadic)) #: instrs in
                     PlainOperand voidOperand
                 else
                     let dst = newVar(parseType typ) in
-                    let () = (Tac.Call (name, args, Some dst, is_variadic)) #: instrs in
+                    let () = (Tac.Call (callee, args, Some dst, is_variadic)) #: instrs in
                     PlainOperand dst
 
             | typ, Ast.Dot (expr, _, off) ->
@@ -990,10 +996,24 @@ let tackify ast globalEnv =
         in new_toplevels @ (Label.labelDoubleFlushToList() |> List.map (fun (num, lbl) -> Tac.StaticConst (lbl, [Tac.D num])))
                          @ (Label.labelStringFlushToList() |> List.map (fun (str, lbl) -> Tac.StaticConst (lbl, [Tac.S str])))
 
+    in let fixExternFunctionsFunctionPointers toplevels = List.map (fun tl -> (match tl with
+            | Tac.Function (name, is_global, params, ret_type, instructions) ->
+                let new_instrs = List.map (fun h -> match h with
+                    | Tac.GetAddress (Tac.StaticVar (id, Tac.Function _), dst) ->
+                        if Environment.setMem id !undefinedNames then
+                            let newId = id^"@GOTPCREL"
+                            in (Tac.Copy (Tac.StaticVar (newId, Tac.Ptr (Tac.Function newId)), dst))
+                        else
+                            h
+                    | _ -> h
+                ) instructions
+                in Tac.Function (name, is_global, params, ret_type, new_instrs)
+            | _ -> tl)) toplevels
 
     in try match ast with
         | Ast.Program tls -> let p = (parseTopLevel tls) @ (parseStaticVarsAndNoticeUndefinedExternFunctions())
                              in let p = replaceIllegalSSE p
+                             in let p = fixExternFunctionsFunctionPointers p
                              in Tac.Program (p @ !localStatics), !undefinedNames
     with Environment.EnvironmentError e -> raise (TackyError e)
 

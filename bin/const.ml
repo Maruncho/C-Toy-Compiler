@@ -162,6 +162,10 @@ let parseConstExpr typed_expr =
                 end in truncWrapper result typ
 
             | (_, Ast.Dereference _) -> raise (ConstError "Cannot use dereference operator in constant expressions.")
+
+            | (_, Ast.AddressOf (Ast.FunType _, Ast.Var (_, Ast.StaticVariable _))) ->
+                raise (ConstError "The compiler doesn't support function pointer constant expressions.")
+
             | (_, Ast.AddressOf _) -> raise (ConstError "Cannot use addressOf operator in constant expressions.")
             | (_, Ast.Subscript _) -> raise (ConstError "Cannot use subscript operator in constant expressions.")
 
