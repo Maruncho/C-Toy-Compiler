@@ -151,7 +151,7 @@ let process_abstract_declarator tokens base_type isTypeSpecFun type_parser expr_
         process_abstract_declarator decl base_type
 
 
-let process_declarator tokens base_type isTypeSpecFun type_parser expr_parser =
+let process_declarator ?(in_struct=false) tokens base_type isTypeSpecFun type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
             | t :: _ -> t
@@ -171,6 +171,7 @@ let process_declarator tokens base_type isTypeSpecFun type_parser expr_parser =
                       let _ = expect L.RPAREN in r
         | L.ID id -> let _ = eatToken() in Ident id
 
+        | _ when not in_struct -> Ident ""
         | _ -> raise (ParserDeclaratorError "Invalid Declarator")
 
     and parseDirectDeclarator() =

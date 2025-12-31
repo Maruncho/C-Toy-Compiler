@@ -1,13 +1,13 @@
 
 
 
-extern int printf(char* format, ...);
+extern int printf(char*, ...);
 
-typedef int (*add_t)(int a, int b);
+typedef int (*add_t)(int, int);
 int add(int a, int b) { return a + b; }
 
-typedef int (*wrapper_t)(add_t fn, int a, int b);
-int wrapper(int fn(int a, int b), int a, int b) {
+typedef int (*wrapper_t)(add_t, int, int);
+int wrapper(int fn(int, int), int a, int b) {
   return fn(a, b);
 }
 
@@ -15,17 +15,17 @@ int wrapperWrapper(wrapper_t fn) {
   return fn(&add, 2, 3);
 }
 
-int arith(int (*f)(int x), int (*g)(int x), int x) {
-    int (*a)(int x) = f;
-    int (*b)(int x) = f;
-    int (*c)(int x) = g;
+int arith(int (*f)(int), int (*g)(int), int x) {
+    int (*a)(int) = f;
+    int (*b)(int) = f;
+    int (*c)(int) = g;
     if ((a != b) || (a == c))
       return -3;
 
     return f(g(f(x)));
 }
 
-typedef int (*arg_t)(int x);
+typedef int (*arg_t)(int);
 int inc(int x) { return x + 1; }
 int dbl(int x) { return x * 2; }
 
@@ -41,17 +41,17 @@ arg_t chooser(int which) {
   return arr[which];
 }
 
-int fact_impl(int (*fp)(int x), int n) {
+int fact_impl(int (*fp)(int), int n) {
     return n <= 1 ? 1 : n * fp(n - 1);
 }
 
 int fact(int n) {
-    int (*fp)(int x) = fact;
+    int (*fp)(int) = fact;
     return fact_impl(fp, n);
 }
 
 int main(void) {
-  int (*printf_ptr) (char* format, ...) = 0;
+  int (*printf_ptr) (char*, ...) = 0;
   if(printf_ptr)
     return -1;
   printf_ptr = printf;

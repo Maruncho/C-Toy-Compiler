@@ -777,16 +777,12 @@ let parse tokens =
         (*Because C Standard allows self-reference in midst of definition.........*)
         let initEnv = Environment.add id (Environment.Var (newId, typ), lvl) env in
 
-        (*let (typed_expr, _) = match nextToken() with*)
-        (*    | L.ASSIGN -> let _ = eatToken() in*)
-        (*                  let (_, expr) as typed_expr = implicit_convert_to (parse_expr initEnv lvl) typ in*)
-        (*                  (Some typed_expr, Some expr)*)
-        (*    | _ -> (None, None)*)
-
         let initialiser = match nextToken() with
-            | L.ASSIGN -> let _ = eatToken() in
-                          let is_static = storage = Some Ast.Static || lvl = 0 in
-                          Some (parse_initialiser typ is_static initEnv lvl)
+            | L.ASSIGN ->
+                let _ = eatToken() in
+                if id = "" then raise (ParserError "Variable definitions require a name.") else
+                let is_static = storage = Some Ast.Static || lvl = 0 in
+                Some (parse_initialiser typ is_static initEnv lvl)
             | _ -> None
 
         in let (newEnv, gEnv) = try Environment.tryAddVariable env !globalEnv lvl storage id newId initialiser typ
@@ -808,13 +804,13 @@ let parse tokens =
 
         let param_types = List.map arrayToPtrParam param_types in
 
-        let paramsEnv, param_names = List.fold_left (fun (env, newNames) (id, typ) -> (
+        let paramsEnv, param_names, hasUnnamedParameter = List.fold_left (fun (env, newNames, up) (id, typ) -> (
             if Environment.isInScope id (lvl+1) env then raise (ParserError (id ^ " is already a parameter"))
             else
 
             let newId = newVar id in
-            (Environment.add id (Environment.Var (newId, typ), lvl+1) env, newNames @ [newId])
-        )) (tempEnv, []) (List.combine param_names param_types) in
+            (Environment.add id (Environment.Var (newId, typ), lvl+1) env, newNames @ [newId], up || id = "")
+        )) (tempEnv, [], false) (List.combine param_names param_types) in
         (*-------------------*)
 
         (* Parse body*)
@@ -829,6 +825,7 @@ let parse tokens =
         in let body = match nextToken() with
             | L.LBRACE ->
                 if is_variadic then raise (ParserError "This compiler does not support variadic function definitions") else
+                if hasUnnamedParameter then raise (ParserError "Omitting parameters names in function definitions is not allowed.") else
                 let _ = eatToken() in Some (parse_block_items bodyEnv (lvl+1) ret_type)
             | _ -> let () = expect L.SEMICOLON in None
         in
@@ -919,7 +916,7 @@ let parse tokens =
                 | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
                     let (id, typ, _) = try
-                            ParserDeclarator.process_declarator tokens typ
+                            ParserDeclarator.process_declarator ~in_struct:true tokens typ
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
@@ -999,7 +996,7 @@ let parse tokens =
                 | x when isTypeSpec env x ->
                     let typ = parse_type_spec None env in
                     let (id, typ, _) = try
-                            ParserDeclarator.process_declarator tokens typ
+                            ParserDeclarator.process_declarator ~in_struct:true tokens typ
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
@@ -1078,6 +1075,7 @@ let parse tokens =
         if storage = Some (Ast.Typedef) then
             begin try
                 let () = expect L.SEMICOLON in
+                if id = "" then raise (ParserError "Typedefs require a name.") else
                 let env = Environment.type_add id typ env lvl in
                 (Ast.TypeDecl (id, typ), env)
             with Environment.EnvironmentError e -> raise (ParserError e) end
