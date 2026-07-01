@@ -2,6 +2,23 @@
 exception NotMatched
 exception LexError of string
 
+let currentLine = ref 1
+let currentFile = ref ""
+
+let linemarker_re = Re.seq [
+    Re.bos;
+    Re.Perl.re {|#\s*(\d+)\s+"([^"]*)"[^\n]*\n?|};
+    Re.Perl.re {|((?:.|\s)*)|}
+] |> Re.compile
+
+let try_parse_linemarker text = match Re.exec_opt linemarker_re text with
+    | None -> None
+    | Some g -> Some (
+        int_of_string (Re.Group.get g 1),
+        Re.Group.get g 2,
+        Re.Group.get g 3 |> String.trim
+    )
+
 type token =
     | ID of string
     | INT32_LIT of Z.t
@@ -391,7 +408,7 @@ let token_regexes =
 
 let match_opt regex text = match Re.exec_opt regex text with
     | None -> None
-    | Some g -> Some (Re.Group.get g 1, (Re.Group.get g 2) |> String.trim)
+    | Some g -> Some (Re.Group.get g 1, Re.Group.get g 2)
 
 let rec match_a_regex pairs text = match pairs with
     | [] -> raise NotMatched
@@ -400,10 +417,22 @@ let rec match_a_regex pairs text = match pairs with
         | Some (matched, afterText) -> (tokenize matched, afterText)
     end
 
-let rec lex ?(print=false) program = let program = (String.trim program) in
-    if program = String.empty then [EOF] else
+let rec lex ?(print=false) program = let program = String.trim program in
+    if program = String.empty then [(EOF, !currentLine, !currentFile)] else
+    match try_parse_linemarker program with
+    | Some (line, file, rest) ->
+        currentFile := file;
+        currentLine := line;
+        lex ~print:print rest
+    | None ->
     match match_a_regex token_regexes program with
-        | (token, afterText) -> 
-            let () = if print then print_string ((string_of_token token) ^ "\n")
-            in token :: (lex ~print:print afterText)
-        | exception NotMatched -> raise (LexError ("Syntax error. Unknown symbol: " ^ (String.sub program 0 1)))
+        | (token, afterText) ->
+            let tok_line = !currentLine in
+            let tok_file = !currentFile in
+            let () = if print then print_string ((string_of_token token) ^ "\n") in
+            let trimmed = String.trim afterText in
+            let stripped = String.length afterText - String.length trimmed in
+            let () = for i = 0 to stripped - 1 do
+                if afterText.[i] = '\n' then currentLine := !currentLine + 1 done in
+            (token, tok_line, tok_file) :: (lex ~print:print trimmed)
+        | exception NotMatched -> raise (LexError (!currentFile ^ ":" ^ string_of_int !currentLine ^ ": Syntax error. Unknown symbol: " ^ (String.sub program 0 1)))

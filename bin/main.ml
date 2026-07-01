@@ -16,6 +16,23 @@ else "./example.c"
 
 let print_string_err = Out_channel.output_string (Out_channel.stderr)
 
+let print_source_context file line =
+    let lines = try
+        let ch = open_in file in
+        let content = In_channel.input_all ch in
+        close_in ch;
+        Some (String.split_on_char '\n' content |> Array.of_list)
+    with _ -> None in
+    match lines with
+    | Some lines ->
+        let start = max 0 (line - 3) in
+        let finish = min (Array.length lines - 1) (line + 1) in
+        for i = start to finish do
+            let marker = if i + 1 = line then ">" else " " in
+            print_string_err (marker ^ " " ^ string_of_int (i + 1) ^ " | " ^ lines.(i) ^ "\n")
+        done
+    | None -> ()
+
 let contents = Core.In_channel.read_all file
 
 let () = try
@@ -39,6 +56,10 @@ let () = try
     let outputFile = (String.sub file 0 ((String.length file) - 2)) ^ ".s"
     in Core.Out_channel.output_string (Core.Out_channel.create outputFile) assembly
 with
-    | Lexer.LexError m -> print_string_err (m ^ "\n"); exit 1;
-    | Parser.ParserError m -> print_string_err (m ^ "\n"); exit 1;
+    | Lexer.LexError m ->
+        let () = print_source_context !Lexer.currentFile !Lexer.currentLine in
+        print_string_err (m ^ "\n"); exit 1;
+    | Parser.ParserError m ->
+        let () = print_source_context !Parser.currentFile !Parser.currentLine in
+        print_string_err (!Parser.currentFile ^ ":" ^ string_of_int (!Parser.currentLine) ^ ": " ^ m ^ "\n"); exit 1;
     | Tackify.TackyError m -> print_string_err (m ^ "\n"); exit 1;

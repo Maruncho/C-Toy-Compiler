@@ -3,19 +3,22 @@ module L = Lexer
 
 exception ParserError of string
 
+let currentLine = ref 0
+let currentFile = ref ""
+
 let globalEnv = ref Environment.emptyGlobal
 
 let parse tokens =
     let tokens = ref tokens
     in let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
-            | t :: _ -> t
+            | (t, l, f) :: _ -> currentLine := l; currentFile := f; t
     in let nextNextToken() = match !tokens with
-            | _ :: t :: _ -> t
+            | _ :: (t, l, f) :: _ -> currentLine := l; currentFile := f; t
             | _ -> failwith "Went beyond EOF"
     in let eatToken() = match !tokens with
             | [] -> failwith "Trying to eat beyond EOF"
-            | h :: t -> let () = tokens := t in h
+            | (h, l, f) :: t -> let () = currentLine := l; currentFile := f; tokens := t in h
     in let expect expected = let t = eatToken() in if t <> expected then
                              raise (ParserError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
@@ -920,7 +923,11 @@ let parse tokens =
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
-                        with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+                        with ParserDeclarator.ParserDeclaratorError e ->
+                            (match !tokens with
+                            | (_, l, f) :: _ -> currentLine := l; currentFile := f
+                            | [] -> ());
+                            raise (ParserError e) in
 
                     let () = begin match typ with
                         | Ast.FunType _ ->
@@ -1000,7 +1007,11 @@ let parse tokens =
                                 (isTypeSpec env)
                                 (fun () -> parse_type_spec None env)
                                 (fun () -> parse_expr env lvl)
-                        with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+                        with ParserDeclarator.ParserDeclaratorError e ->
+                            (match !tokens with
+                            | (_, l, f) :: _ -> currentLine := l; currentFile := f
+                            | [] -> ());
+                            raise (ParserError e) in
 
                     let () = begin match typ with
                         | Ast.FunType _ ->
@@ -1070,7 +1081,11 @@ let parse tokens =
                     (isTypeSpec env)
                     (fun () -> parse_type_spec None env)
                     (fun () -> parse_expr env lvl)
-            with ParserDeclarator.ParserDeclaratorError e -> raise (ParserError e) in
+            with ParserDeclarator.ParserDeclaratorError e ->
+                (match !tokens with
+                | (_, l, f) :: _ -> currentLine := l; currentFile := f
+                | [] -> ());
+                raise (ParserError e) in
 
         if storage = Some (Ast.Typedef) then
             begin try
@@ -1363,10 +1378,16 @@ let parse tokens =
         | L.LPAREN when isTypeSpec env (nextNextToken()) ->
             let _ = eatToken() in
             let typp = parse_type_spec None env in
-            let typp = ParserDeclarator.process_abstract_declarator tokens typp
-                (isTypeSpec env)
-                (fun () -> parse_type_spec None env)
-                (fun () -> parse_expr env lvl) in
+            let typp = try
+                ParserDeclarator.process_abstract_declarator tokens typp
+                    (isTypeSpec env)
+                    (fun () -> parse_type_spec None env)
+                    (fun () -> parse_expr env lvl)
+                with ParserDeclarator.ParserDeclaratorError e ->
+                    (match !tokens with
+                    | (_, l, f) :: _ -> currentLine := l; currentFile := f
+                    | [] -> ());
+                    raise (ParserError e) in
             let () = expect L.RPAREN in
             let src = parse_cast env lvl in
 
@@ -1474,10 +1495,16 @@ let parse tokens =
             if isTypeSpec env (nextNextToken()) then
                 let () = expect L.LPAREN in
                 let typ = parse_type_spec None env in
-                let typ = ParserDeclarator.process_abstract_declarator tokens typ
-                    (isTypeSpec env)
-                    (fun () -> parse_type_spec None env)
-                    (fun () -> parse_expr env lvl) in
+                let typ = try
+                    ParserDeclarator.process_abstract_declarator tokens typ
+                        (isTypeSpec env)
+                        (fun () -> parse_type_spec None env)
+                        (fun () -> parse_expr env lvl)
+                    with ParserDeclarator.ParserDeclaratorError e ->
+                        (match !tokens with
+                        | (_, l, f) :: _ -> currentLine := l; currentFile := f
+                        | [] -> ());
+                        raise (ParserError e) in
                 if not (Ast.isComplete typ) then raise (ParserError "Can't get the size of an incomplete type.") else
                 if (Ast.isFunctionType typ) then raise (ParserError "Can't get the size of a function.") else
                 let () = expect L.RPAREN in

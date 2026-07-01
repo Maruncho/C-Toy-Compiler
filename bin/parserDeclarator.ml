@@ -29,13 +29,13 @@ let rec string_abstract_decl d = match d with
 let process_abstract_declarator tokens base_type isTypeSpecFun type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
-            | t :: _ -> t
+            | (t, _, _) :: _ -> t
     in let nextNextToken() = match !tokens with
-            | _ :: t :: _ -> t
+            | _ :: (t, _, _) :: _ -> t
             | _ -> failwith "Went beyond EOF"
     in let eatToken() = match !tokens with
             | [] -> failwith "Trying to eat beyond EOF"
-            | h :: t -> let () = tokens := t in h
+            | (h, _, _) :: t -> let () = tokens := t in h
     in let expect expected = let t = eatToken() in if t <> expected then
                              raise (ParserDeclaratorError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
@@ -154,13 +154,13 @@ let process_abstract_declarator tokens base_type isTypeSpecFun type_parser expr_
 let process_declarator ?(in_struct=false) tokens base_type isTypeSpecFun type_parser expr_parser =
     let nextToken() = match !tokens with
             | [] -> failwith "Went beyond EOF"
-            | t :: _ -> t
+            | (t, _, _) :: _ -> t
     in let nextNextToken() = match !tokens with
-            | _ :: t :: _ -> t
+            | _ :: (t, _, _) :: _ -> t
             | _ -> failwith "Went beyond EOF"
     in let eatToken() = match !tokens with
             | [] -> failwith "Trying to eat beyond EOF"
-            | h :: t -> let () = tokens := t in h
+            | (h, _, _) :: t -> let () = tokens := t in h
     in let expect expected = let t = eatToken() in if t <> expected then
                              raise (ParserDeclaratorError ("Expected " ^ (L.string_of_token expected) ^ ", but got " ^ (L.string_of_token t)))
 
